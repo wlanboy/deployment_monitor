@@ -58,6 +58,11 @@ Siehe: http://localhost:3000/d/deployments/deployments?orgId=1&from=now-15m&to=n
 ```bash
 .venv/bin/uvicorn api:app --reload --port 8000
 ```
+
+## Swagger API
+* http://localhost:8000/docs
+![Swagger API](images/swagger-v1.png)
+
 ## 🚀 Beispiele
 ```bash
 # liste playbooks
