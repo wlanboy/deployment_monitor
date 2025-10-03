@@ -210,3 +210,32 @@ def run_deployment(deployment_id: str):
             yield from run_playbook_streamed(playbook, inventory, tags, skip_tags, run_id)
 
     return StreamingResponse(stream_all(), media_type="text/plain")
+
+def run_git_command(args: list) -> str:
+    process = subprocess.Popen(
+        args,
+        cwd=base_path,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True
+    )
+    output, _ = process.communicate()
+    return output
+
+@app.get("/git/status")
+def git_status():
+    if not os.path.isdir(os.path.join(base_path, ".git")):
+        raise HTTPException(status_code=400, detail="Kein Git-Repository im base_path gefunden")
+    output = run_git_command(["git", "status"])
+    return {"status": output}
+
+@app.post("/git/checkout/{branch}")
+def git_checkout(branch: str):
+    if not os.path.isdir(os.path.join(base_path, ".git")):
+        raise HTTPException(status_code=400, detail="Kein Git-Repository im base_path gefunden")
+    fetch_output = run_git_command(["git", "fetch"])
+    checkout_output = run_git_command(["git", "checkout", branch])
+    return {
+        "fetch": fetch_output,
+        "checkout": checkout_output
+    }
