@@ -46,3 +46,4 @@ Siehe: https://github.com/wlanboy/deployment_monitor/tree/main/prometheus
 ## 📈 Grafana Dashboard
 Siehe: http://localhost:3000/d/deployments/deployments?orgId=1&from=now-15m&to=now&timezone=browser&var-datasource=bezwwgua3ke80f&refresh=30s
 
+![Grafana Dashboard](dashboards/dashboard.png)
