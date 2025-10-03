@@ -1,7 +1,6 @@
 ---
 - name: Create and verify folder in home directory
-  hosts: localhost
-  connection: local
+  hosts: all
   gather_facts: true
 
   vars:

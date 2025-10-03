@@ -1,7 +1,6 @@
 ---
 - name: Create file in existing folder
-  hosts: localhost
-  connection: local
+  hosts: all
   gather_facts: true
 
   vars:

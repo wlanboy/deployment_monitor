@@ -1,0 +1,7 @@
+# ssh_inventory.yml
+all:
+  hosts:
+    gmk:
+      ansible_host: gmk
+      ansible_connection: ssh
+
