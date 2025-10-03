@@ -60,8 +60,15 @@ Siehe: http://localhost:3000/d/deployments/deployments?orgId=1&from=now-15m&to=n
 ```
 ## 🚀 Beispiele
 ```bash
+# liste playbooks
 curl http://localhost:8000/playbooks
+
+# run für ein playbook und ein inventory
 curl "http://localhost:8000/run?playbook=playbooks/folder.yaml&inventory=inventories/home/home.yaml"
+
+# run für ein playbook und in inventory mit tags und skip-tags
+curl "http://localhost:8000/run?playbook=playbooks/folder.yaml&inventory=inventories/home/home.yaml&tags=create&skip_tags=check"
+curl "http://localhost:8000/run?playbook=playbooks/folder.yaml&inventory=inventories/home/home.yaml&tags=check"
 ```
 
 ## Ausgabe playbooks

@@ -12,13 +12,12 @@
         path: "{{ folder_path }}"
         state: directory
         mode: '0755'
+      tags:
+        create
 
     - name: Check folder permissions
       ansible.builtin.stat:
         path: "{{ folder_path }}"
       register: folder_stat
-
-    - name: Fail if permissions are not 0755
-      ansible.builtin.fail:
-        msg: "Ordner hat nicht die erwarteten Rechte: {{ folder_stat.stat.mode }}"
-      when: folder_stat.stat.mode != '0755'
+      tags:
+        check

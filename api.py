@@ -60,14 +60,23 @@ def extract_hosts(output):
     return sorted(hosts)
 
 # 🔁 Playbook ausführen + streamen
-def run_playbook_streamed(playbook, retries, run_id, inventory_file):
+def run_playbook_streamed(playbook, retries, run_id, inventory_file, tags=None, skip_tags=None):
     for attempt in range(1, retries + 1):
         yield f"\n▶ Starte Playbook: {playbook} (Versuch {attempt}/{retries})\n"
+        if tags:
+            yield f"Tags: {tags}\n"
+        if skip_tags:
+            yield f"Skip-Tags: {skip_tags}\n"
 
         start = datetime.now()
         start_ts = time.time()
 
         cmd = ["ansible-playbook", playbook, "-i", inventory_file]
+        if tags:
+            cmd += ["--tags", tags]
+        if skip_tags:
+            cmd += ["--skip-tags", skip_tags]
+
         process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
 
         output_lines = []
@@ -115,7 +124,12 @@ def list_playbooks():
     return [pb["file"] for pb in config.get("playbooks", [])]
 
 @app.get("/run")
-def run(playbook: str = Query(...), inventory: str = Query(...)):
+def run(
+    playbook: str = Query(...),
+    inventory: str = Query(...),
+    tags: str = Query(None),
+    skip_tags: str = Query(None)
+):
     if not os.path.isfile(playbook):
         return JSONResponse(status_code=404, content={"error": f"Playbook '{playbook}' nicht gefunden."})
     if not os.path.isfile(inventory):
@@ -125,6 +139,6 @@ def run(playbook: str = Query(...), inventory: str = Query(...)):
     retries = 1
 
     return StreamingResponse(
-        run_playbook_streamed(playbook, retries, run_id, inventory),
+        run_playbook_streamed(playbook, retries, run_id, inventory, tags, skip_tags),
         media_type="text/plain"
     )
