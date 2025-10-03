@@ -1,0 +1,11 @@
+[project]
+name = "deployment-monitor"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.118.0",
+    "prometheus-client>=0.23.1",
+    "pydantic>=2.11.9",
+]
