@@ -30,6 +30,7 @@ prometheus:
 ```
 curl -LsSf https://astral.sh/uv/install.sh | sh
 uv sync
+uv pip compile pyproject.toml -o requirements.txt
 uv run deploy.py
 ```
 

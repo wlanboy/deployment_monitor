@@ -8,6 +8,10 @@ fastapi==0.118.0
     # via deployment-monitor (pyproject.toml)
 idna==3.10
     # via anyio
+markdown-it-py==4.0.0
+    # via rich
+mdurl==0.1.2
+    # via markdown-it-py
 prometheus-client==0.23.1
     # via deployment-monitor (pyproject.toml)
 pydantic==2.11.9
@@ -16,6 +20,12 @@ pydantic==2.11.9
     #   fastapi
 pydantic-core==2.33.2
     # via pydantic
+pygments==2.19.2
+    # via rich
+pyyaml==6.0.3
+    # via deployment-monitor (pyproject.toml)
+rich==14.1.0
+    # via deployment-monitor (pyproject.toml)
 sniffio==1.3.1
     # via anyio
 starlette==0.48.0
