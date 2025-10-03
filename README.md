@@ -8,7 +8,7 @@ Dieses Tool führt mehrere Ansible-Playbooks aus, misst deren Laufzeit und Statu
 - Zeitmessung, Exit-Code, Anzahl der Versuche
 - Speicherung in `deployment.db` (SQLite)
 - Push von Metriken an Prometheus Pushgateway
-- REST-API zur Abfrage der Metriken via FastAPI
+- REST-API zur Abfrage der Metriken via FastAPI (todo)
 
 ## ⚙️ Konfiguration (`config.yaml`)
 
