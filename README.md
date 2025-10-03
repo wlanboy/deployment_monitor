@@ -38,3 +38,6 @@ uv run deploy.py
 ```bash
 python deploy.py
 ```
+
+## 🚀 Prometheus
+Siehe: https://github.com/wlanboy/deployment_monitor/tree/main/prometheus
