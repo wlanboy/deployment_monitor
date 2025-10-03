@@ -9,6 +9,7 @@ Dieses Tool führt mehrere Ansible-Playbooks aus, misst deren Laufzeit und Statu
 - Speicherung in `deployment.db` (SQLite)
 - Push von Metriken an Prometheus Pushgateway
 - REST-API zur Abfrage der Metriken via FastAPI (todo)
+- Grafana-Dashboard zur Visualisierung
 
 ## ⚙️ Konfiguration (`config.yaml`)
 
@@ -39,5 +40,9 @@ uv run deploy.py
 python deploy.py
 ```
 
-## 🚀 Prometheus
+## 🌐 Prometheus
 Siehe: https://github.com/wlanboy/deployment_monitor/tree/main/prometheus
+
+## 📈 Grafana Dashboard
+Siehe: http://localhost:3000/d/deployments/deployments?orgId=1&from=now-15m&to=now&timezone=browser&var-datasource=bezwwgua3ke80f&refresh=30s
+
