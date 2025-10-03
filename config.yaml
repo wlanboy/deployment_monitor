@@ -1,0 +1,11 @@
+playbooks:
+  - name: folder
+    file: playbooks/folder.yml
+    retries: 1
+  - name: file
+    file: playbooks/file.yml
+    retries: 1
+
+prometheus:
+  job_name: ansible_deployment
+  pushgateway_url: http://localhost:9091
