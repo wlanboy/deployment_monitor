@@ -12,9 +12,13 @@ DB_PATH = "deploymentjobs.db"
 try:
     with open("config.yaml") as f:
         config = yaml.safe_load(f)
+        base_path = config.get("base_path", "")
 except Exception  as e:
     config = {"playbooks": [], "prometheus": {}}
     print(f"Fehler beim Laden der config.yaml: {e}")
+
+def resolve_path(relative_path: str) -> str:
+    return os.path.join(base_path, relative_path) if base_path else relative_path
 
 # 🧮 Metriken pushen
 def push_metrics(playbook, duration, status, attempt, stats, run_id):
@@ -71,7 +75,10 @@ def run_playbook_streamed(playbook, inventory, tags, skip_tags, run_id, retries=
         start = datetime.now()
         start_ts = time.time()
 
-        cmd = ["ansible-playbook", playbook, "-i", inventory]
+        playbook_path = resolve_path(playbook)
+        inventory_path = resolve_path(inventory)
+        cmd = ["ansible-playbook", playbook_path, "-i", inventory_path]
+
         if tags: cmd += ["--tags", tags]
         if skip_tags: cmd += ["--skip-tags", skip_tags]
 
@@ -194,10 +201,10 @@ def run_deployment(deployment_id: str):
     def stream_all():
         for item in items:
             playbook, inventory, tags, skip_tags = item
-            if not os.path.isfile(playbook):
+            if not os.path.isfile(resolve_path(playbook)):
                 yield f"\n❌ Playbook nicht gefunden: {playbook}\n"
                 continue
-            if not os.path.isfile(inventory):
+            if not os.path.isfile(resolve_path(inventory)):
                 yield f"\n❌ Inventory nicht gefunden: {inventory}\n"
                 continue
             yield from run_playbook_streamed(playbook, inventory, tags, skip_tags, run_id)

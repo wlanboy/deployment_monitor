@@ -1,3 +1,5 @@
+base_path: /opt/dpl
+
 playbooks:
   - name: folder
     file: playbooks/folder.yaml
