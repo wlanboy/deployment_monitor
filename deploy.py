@@ -1,20 +1,22 @@
-import subprocess, time, yaml, uuid, re
+import subprocess
+import time
+import yaml
+import uuid
+import re
+import argparse
 from datetime import datetime
 from db import init_db, log_deployment
 from metrics import push_metrics
 from rich.console import Console
 from rich.table import Table
 from rich import box
+import os
 
 console = Console()
 
 def parse_stats(output):
     stats = {'ok': 0, 'changed': 0, 'skipped': 0, 'failed': 0}
-    # Suche nach der Zeile mit Task-Zusammenfassung
-    match = re.search(
-        r"localhost\s+.*?ok=(\d+)\s+changed=(\d+)\s+unreachable=(\d+)\s+failed=(\d+)\s+skipped=(\d+)",
-        output
-    )
+    match = re.search(r"ok=(\d+)\s+changed=(\d+)\s+unreachable=(\d+)\s+failed=(\d+)\s+skipped=(\d+)", output)
     if match:
         stats['ok'] = int(match.group(1))
         stats['changed'] = int(match.group(2))
@@ -22,14 +24,24 @@ def parse_stats(output):
         stats['skipped'] = int(match.group(5))
     return stats
 
-def run_playbook(playbook, retries, run_id):
+def extract_hosts(output):
+    hosts = set()
+    for line in output.splitlines():
+        if re.match(r"^\s*\S+\s+:.*ok=", line):
+            host = line.split(":")[0].strip()
+            hosts.add(host)
+    return sorted(hosts)
+
+def run_playbook(playbook, retries, run_id, inventory_file):
     for attempt in range(1, retries + 1):
         console.rule(f"[bold cyan]▶ Starte Playbook: {playbook} (Versuch {attempt}/{retries})")
 
         start = datetime.now()
         start_ts = time.time()
 
-        result = subprocess.run(["ansible-playbook", playbook], capture_output=True, text=True)
+        cmd = ["ansible-playbook", playbook, "-i", inventory_file]
+        console.print(cmd)
+        result = subprocess.run(cmd, capture_output=True, text=True)
         end_ts = time.time()
         end = datetime.now()
 
@@ -37,6 +49,7 @@ def run_playbook(playbook, retries, run_id):
         status = result.returncode
         error_msg = result.stderr.strip() if status != 0 else ""
         stats = parse_stats(result.stdout)
+        hosts = extract_hosts(result.stdout)
 
         log_deployment(playbook, start.isoformat(), end.isoformat(), duration, status, attempt)
         push_metrics(playbook, duration, status, attempt, stats, error_msg, run_id, config)
@@ -53,6 +66,7 @@ def run_playbook(playbook, retries, run_id):
         table.add_row("Tasks Changed", str(stats.get('changed', 0)))
         table.add_row("Tasks Skipped", str(stats.get('skipped', 0)))
         table.add_row("Tasks Failed", str(stats.get('failed', 0)))
+        table.add_row("Hosts", ", ".join(hosts) if hosts else "—")
 
         console.print(table)
 
@@ -64,6 +78,15 @@ def run_playbook(playbook, retries, run_id):
             break
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Deployment Runner")
+    parser.add_argument("--inventory", "-i", required=True, help="Pfad zur Inventar-Datei")
+    args = parser.parse_args()
+
+    inventory_file = args.inventory
+    if not os.path.isfile(inventory_file):
+        console.print(f"[red]Inventar-Datei nicht gefunden: {inventory_file}[/red]")
+        exit(1)
+
     init_db()
     with open("config.yaml") as f:
         config = yaml.safe_load(f)
@@ -74,7 +97,7 @@ if __name__ == "__main__":
 
     for pb in config["playbooks"]:
         start = time.time()
-        run_playbook(pb["file"], pb["retries"], run_id)
+        run_playbook(pb["file"], pb["retries"], run_id, inventory_file)
         total_duration += int(time.time() - start)
 
     console.rule(f"[bold green]✅ Alle Playbooks abgeschlossen (Gesamtdauer: {total_duration}s)")

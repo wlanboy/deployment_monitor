@@ -5,10 +5,11 @@ Dieses Tool führt mehrere Ansible-Playbooks aus, misst deren Laufzeit und Statu
 ## 📦 Features
 
 - Ausführung mehrerer Playbooks mit Retry-Logik
+- Übergabe von Inventories
 - Zeitmessung, Exit-Code, Anzahl der Versuche
 - Speicherung in `deployment.db` (SQLite)
 - Push von Metriken an Prometheus Pushgateway
-- REST-API zur Abfrage der Metriken via FastAPI (todo)
+- REST-API zur Steuerung von Playbooks (todo)
 - Grafana-Dashboard zur Visualisierung
 
 ## ⚙️ Konfiguration (`config.yaml`)
@@ -38,6 +39,11 @@ uv run deploy.py
 ## 🚀 Ausführung
 ```bash
 python deploy.py
+```
+
+## 🚀 Ausführung mit Invetories
+```bash
+python deploy.py -i inventories/home
 ```
 
 ## 🌐 Prometheus
