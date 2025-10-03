@@ -77,6 +77,14 @@ def run_playbook(playbook, retries, run_id, inventory_file):
             console.print(f"[green]Playbook '{playbook}' erfolgreich abgeschlossen.[/green]")
             break
 
+def run_playbook_streamed(playbook, inventory_file):
+    cmd = ["ansible-playbook", playbook, "-i", inventory_file]
+    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+    for line in process.stdout:
+        yield line
+    process.stdout.close()
+    process.wait()
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Deployment Runner")
     parser.add_argument("--inventory", "-i", required=True, help="Pfad zur Inventar-Datei")
@@ -101,3 +109,4 @@ if __name__ == "__main__":
         total_duration += int(time.time() - start)
 
     console.rule(f"[bold green]✅ Alle Playbooks abgeschlossen (Gesamtdauer: {total_duration}s)")
+
