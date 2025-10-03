@@ -1,0 +1,25 @@
+---
+- name: Create and verify folder in home directory
+  hosts: localhost
+  connection: local
+  gather_facts: true
+
+  vars:
+    folder_path: "{{ ansible_env.HOME }}/test"
+
+  tasks:
+    - name: Create folder with 0755 permissions
+      ansible.builtin.file:
+        path: "{{ folder_path }}"
+        state: directory
+        mode: '0755'
+
+    - name: Check folder permissions
+      ansible.builtin.stat:
+        path: "{{ folder_path }}"
+      register: folder_stat
+
+    - name: Fail if permissions are not 0755
+      ansible.builtin.fail:
+        msg: "Ordner hat nicht die erwarteten Rechte: {{ folder_stat.stat.mode }}"
+      when: folder_stat.stat.mode != '0755'

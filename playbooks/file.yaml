@@ -1,0 +1,16 @@
+---
+- name: Create file in existing folder
+  hosts: localhost
+  connection: local
+  gather_facts: true
+
+  vars:
+    folder_path: "{{ ansible_env.HOME }}/test"
+    file_path: "{{ folder_path }}/hello.txt"
+
+  tasks:
+    - name: Create empty file
+      ansible.builtin.file:
+        path: "{{ file_path }}"
+        state: touch
+        mode: '0644'
