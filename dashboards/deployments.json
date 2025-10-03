@@ -1,0 +1,143 @@
+{
+  "uid": "deployments",
+  "title": "Deployments",
+  "timezone": "browser",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "30s",
+  "tags": ["ansible", "deployment", "monitoring"],
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "type": "datasource",
+        "label": "Prometheus Source",
+        "query": "prometheus",
+        "refresh": 1,
+        "hide": 0,
+        "datasource": null
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Total Playbooks Executed",
+      "datasource": "$datasource",
+      "targets": [
+        { "expr": "count(deployment_duration_seconds)", "refId": "A" }
+      ],
+      "gridPos": { "x": 0, "y": 0, "w": 4, "h": 4 }
+    },
+    {
+      "type": "stat",
+      "title": "Total Errors",
+      "datasource": "$datasource",
+      "targets": [
+        { "expr": "sum(deployment_errors_total)", "refId": "B" }
+      ],
+      "gridPos": { "x": 4, "y": 0, "w": 4, "h": 4 }
+    },
+    {
+      "type": "stat",
+      "title": "Average Duration (s)",
+      "datasource": "$datasource",
+      "targets": [
+        { "expr": "avg(deployment_duration_seconds)", "refId": "C" }
+      ],
+      "gridPos": { "x": 8, "y": 0, "w": 4, "h": 4 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Deployment Duration per Playbook",
+      "datasource": "$datasource",
+      "targets": [
+        {
+          "expr": "deployment_duration_seconds",
+          "legendFormat": "{{playbook}} on {{instance}}",
+          "refId": "D"
+        }
+      ],
+      "gridPos": { "x": 0, "y": 4, "w": 12, "h": 6 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Retries per Playbook",
+      "datasource": "$datasource",
+      "targets": [
+        {
+          "expr": "deployment_retries_total",
+          "legendFormat": "{{playbook}}",
+          "refId": "E"
+        }
+      ],
+      "gridPos": { "x": 0, "y": 10, "w": 6, "h": 6 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Failed Tasks",
+      "datasource": "$datasource",
+      "targets": [
+        {
+          "expr": "deployment_failed_tasks_total",
+          "legendFormat": "{{playbook}}",
+          "refId": "F"
+        }
+      ],
+      "gridPos": { "x": 6, "y": 10, "w": 6, "h": 6 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Changed Tasks",
+      "datasource": "$datasource",
+      "targets": [
+        {
+          "expr": "deployment_changed_tasks_total",
+          "legendFormat": "{{playbook}}",
+          "refId": "G"
+        }
+      ],
+      "gridPos": { "x": 0, "y": 16, "w": 6, "h": 6 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Skipped Tasks",
+      "datasource": "$datasource",
+      "targets": [
+        {
+          "expr": "deployment_skipped_tasks_total",
+          "legendFormat": "{{playbook}}",
+          "refId": "H"
+        }
+      ],
+      "gridPos": { "x": 6, "y": 16, "w": 6, "h": 6 }
+    },
+    {
+      "type": "table",
+      "title": "Deployment Status Table",
+      "datasource": "$datasource",
+      "targets": [
+        {
+          "expr": "deployment_status",
+          "legendFormat": "{{playbook}}",
+          "refId": "I"
+        }
+      ],
+      "gridPos": { "x": 0, "y": 22, "w": 12, "h": 6 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Duration by Run ID",
+      "datasource": "$datasource",
+      "targets": [
+        {
+          "expr": "deployment_duration_seconds",
+          "legendFormat": "{{run_id}}",
+          "refId": "J"
+        }
+      ],
+      "gridPos": { "x": 0, "y": 28, "w": 12, "h": 6 }
+    }
+  ],
+  "annotations": { "list": [] }
+}
