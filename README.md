@@ -112,3 +112,45 @@ Tasks Failed:  0
 
 ✔ Playbook 'playbooks/folder.yaml' erfolgreich abgeschlossen.
 ```
+
+## Deployment Verwaltung (nur rest api)
+### 🧱 1. Deployment anlegen
+```bash
+curl -X POST "http://localhost:8000/deployment?name=ordnerunddatei"
+
+# aus der Antwort die uuid nehmen
+{"id":"76aaf757-761d-45a1-9136-ab05c02b7185","name":"ordnerunddatei"}
+```
+
+### ➕ 2. Playbooks hinzufügen
+#### 🧩 Schritt 1: folder.yaml mit Tags und Skip-Tags
+```bash
+curl -X PUT "http://localhost:8000/deployment/76aaf757-761d-45a1-9136-ab05c02b7185?playbook=playbooks/folder.yaml&inventory=inventories/home/home.yaml&tags=create&skip_tags=check"
+
+# Antwort
+{"status":"added","deployment_id":"76aaf757-761d-45a1-9136-ab05c02b7185"}
+```
+
+#### 🧩 Schritt 2: file.yaml ohne Tags
+```bash
+curl -X PUT "http://localhost:8000/deployment/76aaf757-761d-45a1-9136-ab05c02b7185?playbook=playbooks/file.yaml&inventory=inventories/home/home.yaml"
+
+# Antwort
+{"status":"added","deployment_id":"76aaf757-761d-45a1-9136-ab05c02b7185"}
+```
+
+### 📦 3. Deployment anzeigen
+```bash
+curl "http://localhost:8000/deployment/76aaf757-761d-45a1-9136-ab05c02b7185"
+
+# Antwort
+{"id":"76aaf757-761d-45a1-9136-ab05c02b7185","name":"ordnerunddatei",
+"items":[
+{"playbook":"playbooks/folder.yaml","inventory":"inventories/home/home.yaml","tags":"create","skip_tags":"check"},{"playbook":"playbooks/file.yaml","inventory":"inventories/home/home.yaml","tags":null,"skip_tags":null}
+]}
+```
+
+### 🚀 4. Deployment ausführen
+```bash
+curl "http://localhost:8000/rundeployment/76aaf757-761d-45a1-9136-ab05c02b7185"
+```
