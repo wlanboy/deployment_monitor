@@ -156,6 +156,29 @@ def add_playbook_to_deployment(deployment_id: str, playbook: str = Query(...), i
     conn.close()
     return {"status": "added", "deployment_id": deployment_id}
 
+@app.get("/deployments")
+def list_all_deployments():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT id, name FROM deployments")
+    deployments = [{"id": row[0], "name": row[1]} for row in c.fetchall()]
+    conn.close()
+    return deployments
+
+@app.delete("/deployment/{deployment_id}")
+def delete_deployment(deployment_id: str):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT 1 FROM deployments WHERE id = ?", (deployment_id,))
+    if not c.fetchone():
+        conn.close()
+        raise HTTPException(status_code=404, detail="Deployment not found")
+    c.execute("DELETE FROM deployment_items WHERE deployment_id = ?", (deployment_id,))
+    c.execute("DELETE FROM deployments WHERE id = ?", (deployment_id,))
+    conn.commit()
+    conn.close()
+    return {"status": "deleted", "deployment_id": deployment_id}
+            
 @app.get("/rundeployment/{deployment_id}")
 def run_deployment(deployment_id: str):
     conn = sqlite3.connect(DB_PATH)
