@@ -6,6 +6,10 @@ anyio==4.11.0
     # via starlette
 argparse==1.4.0
     # via deployment-monitor (pyproject.toml)
+certifi==2025.8.3
+    # via requests
+charset-normalizer==3.4.3
+    # via requests
 click==8.3.0
     # via uvicorn
 fastapi==0.118.0
@@ -13,7 +17,9 @@ fastapi==0.118.0
 h11==0.16.0
     # via uvicorn
 idna==3.10
-    # via anyio
+    # via
+    #   anyio
+    #   requests
 markdown-it-py==4.0.0
     # via rich
 mdurl==0.1.2
@@ -29,6 +35,8 @@ pydantic-core==2.33.2
 pygments==2.19.2
     # via rich
 pyyaml==6.0.3
+    # via deployment-monitor (pyproject.toml)
+requests==2.32.5
     # via deployment-monitor (pyproject.toml)
 rich==14.1.0
     # via deployment-monitor (pyproject.toml)
@@ -46,5 +54,7 @@ typing-extensions==4.15.0
     #   typing-inspection
 typing-inspection==0.4.2
     # via pydantic
+urllib3==2.5.0
+    # via requests
 uvicorn==0.37.0
     # via deployment-monitor (pyproject.toml)
