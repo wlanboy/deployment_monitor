@@ -15,10 +15,10 @@ Dieses Tool führt mehrere Ansible-Playbooks aus, misst deren Laufzeit und Statu
 ```yaml
 playbooks:
   - name: folder
-    file: playbooks/folder.yml
+    file: playbooks/folder.yaml
     retries: 1
   - name: file
-    file: playbooks/file.yml
+    file: playbooks/file.yaml
     retries: 1
 
 prometheus:

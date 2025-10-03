@@ -1,9 +1,9 @@
 playbooks:
   - name: folder
-    file: playbooks/folder.yml
+    file: playbooks/folder.yaml
     retries: 1
   - name: file
-    file: playbooks/file.yml
+    file: playbooks/file.yaml
     retries: 1
 
 prometheus:
