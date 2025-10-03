@@ -61,7 +61,7 @@ Siehe: http://localhost:3000/d/deployments/deployments?orgId=1&from=now-15m&to=n
 
 ## Swagger API
 * http://localhost:8000/docs
-![Swagger API](images/swagger-v1.png)
+![Swagger API](images/swagger-api.png)
 
 ## 🚀 Beispiele
 ```bash
