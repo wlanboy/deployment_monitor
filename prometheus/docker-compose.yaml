@@ -12,3 +12,15 @@ services:
     image: prom/pushgateway
     ports:
       - "9091:9091"
+  grafana:
+    image: grafana/grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=deployment
+      - GF_SECURITY_ADMIN_PASSWORD=deployment
+    volumes:
+      - grafana-storage:/var/lib/grafana
+
+volumes:
+  grafana-storage:
