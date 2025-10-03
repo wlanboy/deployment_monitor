@@ -4,8 +4,14 @@ annotated-types==0.7.0
     # via pydantic
 anyio==4.11.0
     # via starlette
+argparse==1.4.0
+    # via deployment-monitor (pyproject.toml)
+click==8.3.0
+    # via uvicorn
 fastapi==0.118.0
     # via deployment-monitor (pyproject.toml)
+h11==0.16.0
+    # via uvicorn
 idna==3.10
     # via anyio
 markdown-it-py==4.0.0
@@ -40,3 +46,5 @@ typing-extensions==4.15.0
     #   typing-inspection
 typing-inspection==0.4.2
     # via pydantic
+uvicorn==0.37.0
+    # via deployment-monitor (pyproject.toml)
