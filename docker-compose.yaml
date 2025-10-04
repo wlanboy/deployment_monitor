@@ -1,0 +1,15 @@
+version: '3.8'
+services:
+  api:
+    image: wlanboy/deployment-monitor
+    ports:
+      - "8000:8000"
+    volumes:
+      - ~/.ssh:/home/deployuser/.ssh:ro
+      - /opt/dpl:/opt/dpl:rw
+      - deployment-db:/app/deploymentjobs:rw
+    environment:
+      - PUSHGATEWAY_URL=http://localhost:9091
+
+volumes:
+  deployment-db:
