@@ -6,7 +6,9 @@ import requests
 
 app = FastAPI(title="Deployment API")
 
-DB_PATH = "deploymentjobs.db"
+DB_PATH = os.path.join("deploymentjobs", "deploymentjobs.db")
+os.makedirs("deploymentjobs", exist_ok=True)
+
 
 # 📁 Konfiguration laden
 try:
