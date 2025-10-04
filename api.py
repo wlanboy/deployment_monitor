@@ -23,7 +23,7 @@ def resolve_path(relative_path: str) -> str:
 # 🧮 Metriken pushen
 def push_metrics(playbook, duration, status, attempt, stats, run_id):
     job = config.get("prometheus", {}).get("job_name", "ansible_deployment")
-    url = config.get("prometheus", {}).get("pushgateway_url", "http://localhost:9091")
+    url = os.getenv("PUSHGATEWAY_URL", config.get("prometheus", {}).get("pushgateway_url", "http://localhost:9091"))
     labels = f'playbook="{playbook}",run_id="{run_id}"'
     metrics = f"""
 # TYPE deployment_duration_seconds gauge
