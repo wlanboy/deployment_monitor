@@ -33,6 +33,7 @@ prometheus:
 ```bash
 sudo mkdir -p /opt/dpl
 sudo chown -R $USER:$USER /opt/dpl
+sudo chmod -R 775 /opt/dpl
 cp -r inventories /opt/dpl/
 cp -r playbooks /opt/dpl/
 cd /opt/dpl
