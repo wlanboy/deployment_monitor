@@ -63,7 +63,7 @@ python deploy.py -i inventories/home
 ```
 
 ## 🌐 Prometheus
-Siehe: https://github.com/wlanboy/deployment_monitor/tree/main/prometheus
+Siehe: https://github.com/wlanboy/deployment_monitor/tree/main/prometheus/readme.md
 
 ## 📈 Grafana Dashboard
 Siehe: http://localhost:3000/d/deployments/deployments?orgId=1&from=now-15m&to=now&timezone=browser&var-datasource=bezwwgua3ke80f&refresh=30s
@@ -75,6 +75,12 @@ Siehe: http://localhost:3000/d/deployments/deployments?orgId=1&from=now-15m&to=n
 ## 🚀 Starten der API
 ```bash
 .venv/bin/uvicorn api:app --reload --port 8000
+```
+
+## 🚀 Starten der API über docker compose
+Siehe: https://github.com/wlanboy/deployment_monitor/tree/main/docker.md
+```bash
+docker-compose up
 ```
 
 ## Swagger API
