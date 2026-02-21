@@ -80,6 +80,7 @@ def run_playbook(playbook, retries, run_id, inventory_file):
 def run_playbook_streamed(playbook, inventory_file):
     cmd = ["ansible-playbook", playbook, "-i", inventory_file]
     process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+    assert process.stdout is not None
     for line in process.stdout:
         yield line
     process.stdout.close()

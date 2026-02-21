@@ -1,6 +1,12 @@
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.responses import StreamingResponse
-import subprocess, time, yaml, uuid, re, os, sqlite3
+import os
+import re
+import sqlite3
+import subprocess
+import time
+import uuid
+import yaml
 from datetime import datetime
 import requests
 
@@ -71,8 +77,10 @@ def extract_hosts(output):
 def run_playbook_streamed(playbook, inventory, tags, skip_tags, run_id, retries=1):
     for attempt in range(1, retries + 1):
         yield f"\n▶ Starte Playbook: {playbook} (Versuch {attempt}/{retries})\n"
-        if tags: yield f"Tags: {tags}\n"
-        if skip_tags: yield f"Skip-Tags: {skip_tags}\n"
+        if tags:
+            yield f"Tags: {tags}\n"
+        if skip_tags:
+            yield f"Skip-Tags: {skip_tags}\n"
 
         start = datetime.now()
         start_ts = time.time()
@@ -81,10 +89,13 @@ def run_playbook_streamed(playbook, inventory, tags, skip_tags, run_id, retries=
         inventory_path = resolve_path(inventory)
         cmd = ["ansible-playbook", playbook_path, "-i", inventory_path]
 
-        if tags: cmd += ["--tags", tags]
-        if skip_tags: cmd += ["--skip-tags", skip_tags]
+        if tags:
+            cmd += ["--tags", tags]
+        if skip_tags:
+            cmd += ["--skip-tags", skip_tags]
 
         process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        assert process.stdout is not None
         output_lines = []
         for line in process.stdout:
             output_lines.append(line)
@@ -92,7 +103,6 @@ def run_playbook_streamed(playbook, inventory, tags, skip_tags, run_id, retries=
         process.stdout.close()
         process.wait()
 
-        end = datetime.now()
         duration = int(time.time() - start_ts)
         status = process.returncode
         full_output = "".join(output_lines)
@@ -104,7 +114,8 @@ def run_playbook_streamed(playbook, inventory, tags, skip_tags, run_id, retries=
         yield f"\nErgebnis: {playbook}\nStart: {start.strftime('%H:%M:%S')} | Dauer: {duration}s | Status: {'✅' if status == 0 else '❌'}\n"
         yield f"Hosts: {', '.join(hosts) if hosts else '—'}\n"
 
-        if status == 0: break
+        if status == 0:
+            break
 
 # 🗃️ SQLite Setup
 def init_db():
