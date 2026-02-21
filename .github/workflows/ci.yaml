@@ -37,7 +37,7 @@ jobs:
         # Führt deine Tests aus (erwartet pytest im Projekt)
         run: uv run pytest
 
-      - name: Verify FastMCP app imports
+      - name: Verify app imports
         # Letzter Check: Lässt sich die App ohne Environment-Fehler importieren?
         run: |
-          uv run python -c "from api import app; print('🚀 FastMCP app OK')"
+          uv run python -c "from api import app; print('🚀 app OK')"
