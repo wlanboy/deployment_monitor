@@ -1,10 +1,6 @@
 ### Build-Stage: Python-Abhängigkeiten in ein venv installieren
 FROM python:3.14-slim AS builder
 
-RUN apt-get update && apt-get install -y \
-    gcc \
-    && rm -rf /var/lib/apt/lists/*
-
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
