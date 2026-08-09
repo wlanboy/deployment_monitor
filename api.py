@@ -1,14 +1,15 @@
-from fastapi import FastAPI, Query, HTTPException
-from fastapi.responses import StreamingResponse
 import os
 import re
 import sqlite3
 import subprocess
 import time
 import uuid
-import yaml
 from datetime import datetime
+
 import requests
+import yaml
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import StreamingResponse
 
 app = FastAPI(title="Deployment API")
 
@@ -21,7 +22,7 @@ try:
     with open("config.yaml") as f:
         config = yaml.safe_load(f)
         base_path = config.get("base_path", "")
-except Exception  as e:
+except (OSError, yaml.YAMLError) as e:
     config = {"playbooks": [], "prometheus": {}}
     print(f"Fehler beim Laden der config.yaml: {e}")
 
@@ -51,7 +52,7 @@ deployment_status{{{labels}}} {status}
 """
     try:
         requests.post(f"{url}/metrics/job/{job}", data=metrics)
-    except Exception as e:
+    except requests.RequestException as e:
         print(f"Prometheus push failed: {e}")
 
 # 🧠 Stats extrahieren
@@ -82,7 +83,7 @@ def run_playbook_streamed(playbook, inventory, tags, skip_tags, run_id, retries=
         if skip_tags:
             yield f"Skip-Tags: {skip_tags}\n"
 
-        start = datetime.now()
+        start = datetime.now().astimezone()
         start_ts = time.time()
 
         playbook_path = resolve_path(playbook)

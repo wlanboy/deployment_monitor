@@ -1,16 +1,19 @@
-import subprocess
-import time
-import yaml
-import uuid
-import re
 import argparse
+import os
+import re
+import subprocess
+import sys
+import time
+import uuid
 from datetime import datetime
-from db import init_db, log_deployment
-from metrics import push_metrics
+
+import yaml
+from rich import box
 from rich.console import Console
 from rich.table import Table
-from rich import box
-import os
+
+from db import init_db, log_deployment
+from metrics import push_metrics
 
 console = Console()
 
@@ -36,14 +39,14 @@ def run_playbook(playbook, retries, run_id, inventory_file):
     for attempt in range(1, retries + 1):
         console.rule(f"[bold cyan]▶ Starte Playbook: {playbook} (Versuch {attempt}/{retries})")
 
-        start = datetime.now()
+        start = datetime.now().astimezone()
         start_ts = time.time()
 
         cmd = ["ansible-playbook", playbook, "-i", inventory_file]
         console.print(cmd)
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
         end_ts = time.time()
-        end = datetime.now()
+        end = datetime.now().astimezone()
 
         duration = int(end_ts - start_ts)
         status = result.returncode
@@ -81,8 +84,7 @@ def run_playbook_streamed(playbook, inventory_file):
     cmd = ["ansible-playbook", playbook, "-i", inventory_file]
     process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
     assert process.stdout is not None
-    for line in process.stdout:
-        yield line
+    yield from process.stdout
     process.stdout.close()
     process.wait()
 
@@ -94,7 +96,7 @@ if __name__ == "__main__":
     inventory_file = args.inventory
     if not os.path.isfile(inventory_file):
         console.print(f"[red]Inventar-Datei nicht gefunden: {inventory_file}[/red]")
-        exit(1)
+        sys.exit(1)
 
     init_db()
     with open("config.yaml") as f:

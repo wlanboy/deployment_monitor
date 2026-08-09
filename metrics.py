@@ -1,5 +1,7 @@
 import socket
+
 from prometheus_client import CollectorRegistry, Gauge, push_to_gateway
+
 
 def push_metrics(playbook, duration, status, retries, stats, error_msg, run_id, config):
     registry = CollectorRegistry()
