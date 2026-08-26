@@ -52,7 +52,7 @@ deployment_status{{{labels}}} {status}
 """
     try:
         requests.post(f"{url}/metrics/job/{job}", data=metrics)
-    except requests.RequestException as e:
+    except Exception as e:  # noqa: BLE001 - metrics push must never crash the deployment
         print(f"Prometheus push failed: {e}")
 
 # 🧠 Stats extrahieren
