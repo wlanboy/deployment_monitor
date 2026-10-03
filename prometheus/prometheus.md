@@ -1,7 +1,6 @@
 # Prometheus + Pushgateway Monitoring Setup
 
 Dieses Setup stellt eine einfache Monitoring-Infrastruktur bereit, bestehend aus:
-
 - **Prometheus** zur Metrik-Speicherung und Visualisierung
 - **Pushgateway** zur Annahme von Push-Metriken aus Batch-Jobs (z. B. Ansible-Deployments)
 
