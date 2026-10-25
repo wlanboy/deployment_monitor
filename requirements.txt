@@ -4,21 +4,21 @@ annotated-doc==0.0.5
     # via fastapi
 annotated-types==0.8.0
     # via pydantic
-anyio==4.14.2
+anyio==4.15.1
     # via starlette
 argparse==1.4.0
     # via deployment-monitor (pyproject.toml)
-certifi==2026.7.22
+certifi==2026.10.23
     # via requests
-charset-normalizer==3.5.1
+charset-normalizer==3.5.2
     # via requests
-click==8.4.2
+click==8.5.0
     # via uvicorn
-fastapi==0.141.1
+fastapi==0.162.0
     # via deployment-monitor (pyproject.toml)
 h11==0.16.0
     # via uvicorn
-idna==3.19
+idna==3.20
     # via
     #   anyio
     #   requests
@@ -26,13 +26,15 @@ markdown-it-py==4.2.0
     # via rich
 mdurl==0.1.2
     # via markdown-it-py
+opentelemetry-api==1.45.1
+    # via fastapi
 prometheus-client==0.26.0
     # via deployment-monitor (pyproject.toml)
-pydantic==2.13.4
+pydantic==2.14.1
     # via
     #   deployment-monitor (pyproject.toml)
     #   fastapi
-pydantic-core==2.46.4
+pydantic-core==2.50.1
     # via pydantic
 pygments==2.21.0
     # via rich
@@ -42,21 +44,21 @@ requests==2.34.2
     # via deployment-monitor (pyproject.toml)
 rich==15.0.0
     # via deployment-monitor (pyproject.toml)
-starlette==1.6.0
+starlette==1.10.0
     # via fastapi
 typing-extensions==4.16.0
     # via
     #   anyio
     #   fastapi
+    #   opentelemetry-api
     #   pydantic
     #   pydantic-core
-    #   starlette
     #   typing-inspection
 typing-inspection==0.4.4
     # via
     #   fastapi
     #   pydantic
-urllib3==2.7.0
+urllib3==2.8.0
     # via requests
-uvicorn==0.52.4
+uvicorn==0.54.0
     # via deployment-monitor (pyproject.toml)
