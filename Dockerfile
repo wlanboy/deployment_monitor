@@ -1,4 +1,4 @@
-### Build-Stage: Python-Abhängigkeiten in ein venv installieren
+### Build-Stage: Python-Abhängigkeiten (inkl. ansible-core) in ein venv installieren
 FROM python:3.14-slim AS builder
 
 RUN python -m venv /opt/venv
@@ -6,15 +6,15 @@ ENV PATH="/opt/venv/bin:$PATH"
 
 WORKDIR /app
 COPY requirements.txt .
+# Nur fertige Wheels: kein Kompilieren aus Quellpaketen, keine Build-Tools nötig
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+    pip install --no-cache-dir --only-binary=:all: -r requirements.txt
 
 ### Runtime-Stage: schlankes Image ohne Build-Tools
 FROM python:3.14-slim
 
-# Systempakete für Ansible + SSH (zur Laufzeit benötigt)
-RUN apt-get update && apt-get install -y \
-    ansible \
+# Systempakete, die Ansible zur Laufzeit braucht (Ansible selbst kommt aus dem venv)
+RUN apt-get update && apt-get install -y --no-install-recommends \
     openssh-client \
     git \
     && rm -rf /var/lib/apt/lists/*
@@ -24,15 +24,17 @@ RUN useradd -m deployuser
 
 # Fertiges venv aus der Build-Stage übernehmen
 COPY --from=builder /opt/venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
+ENV PATH="/opt/venv/bin:$PATH" \
+    PYTHONUNBUFFERED=1 \
+    ANSIBLE_NOCOLOR=1
 
 # App-Code
 WORKDIR /app
 COPY *.py ./
 COPY config.yaml ./
 
-# Besitzer setzen und auf Nicht-Root wechseln
-RUN chown -R deployuser:deployuser /app
+# Datenverzeichnis im Image anlegen, damit das Named Volume deployuser gehört
+RUN mkdir -p /app/deploymentjobs && chown -R deployuser:deployuser /app
 USER deployuser
 
 # Expose the port the app runs on
