@@ -11,6 +11,7 @@ Stelle sicher, dass folgende Dateien im Verzeichnis liegen:
 - `Dockerfile`
 - `requirements.txt`
 - `api.py`
+- `*.py` (api.py, db.py, metrics.py, …)
 - `config.yaml`
 
 Dann baue das Image:
@@ -21,7 +22,7 @@ docker build -t deployment-monitor  .
 
 ## 🔐 2. SSH-Keys und Playbooks einbinden
 Die API benötigt Zugriff auf:
-* deine SSH-Keys (~/.ssh)
+* deine SSH-Keys (~/.ssh) – besser ein eigener Deploy-Key statt aller Keys des Users
 * deine Playbooks und Inventories (base_path aus config.yaml)
 * passenden ansible_user in den Inventories, sonst nimmt ansible den user aus dem docker image
 
@@ -30,10 +31,13 @@ Die API benötigt Zugriff auf:
 docker run -it --rm \
   -v ~/.ssh:/home/deployuser/.ssh:ro \
   -v /opt/dpl:/opt/dpl \
-  -e PUSHGATEWAY_URL=http://localhost:9091 \
+  -e PUSHGATEWAY_URL=http://host.docker.internal:9091 \
+  --add-host host.docker.internal:host-gateway \
   -p 8000:8000 \
   deployment-monitor
 ```
+
+Hinweis: `localhost` im Container ist der Container selbst. Das Pushgateway aus `prometheus/docker-compose.yaml` läuft auf dem Host und ist über `host.docker.internal` erreichbar.
 
 ## 🚀 4. Container starten mit docker compose und dockerhub image
 ```bash

@@ -1,3 +1,4 @@
 deployment.db
 __pycache__/
 deploymentjobs.db
+deploymentjobs/
