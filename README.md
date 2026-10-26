@@ -7,7 +7,7 @@ Dieses Tool führt mehrere Ansible-Playbooks aus, misst deren Laufzeit und Statu
 - Ausführung mehrerer Playbooks mit Retry-Logik
 - Übergabe von Inventories
 - Zeitmessung, Exit-Code, Anzahl der Versuche
-- Speicherung in `deployment.db` (SQLite)
+- Speicherung von Deployments und Lauf-Historie in `deploymentjobs/deploymentjobs.db` (SQLite)
 - Push von Metriken an Prometheus Pushgateway
 - REST-API zur Steuerung von Playbooks und git branches
 - Grafana-Dashboard zur Visualisierung
@@ -17,6 +17,8 @@ Dieses Tool führt mehrere Ansible-Playbooks aus, misst deren Laufzeit und Statu
 ```yaml
 base_path: /opt/dpl
 
+# Nur diese Playbooks und Inventories dürfen über die API verwendet werden
+# (Pfade relativ zu base_path, müssen innerhalb von base_path liegen).
 playbooks:
   - name: folder
     file: playbooks/folder.yaml
@@ -25,10 +27,35 @@ playbooks:
     file: playbooks/file.yaml
     retries: 1
 
+inventories:
+  - inventories/home/home.yaml
+  - inventories/test/test.yaml
+
+ansible:
+  timeout_seconds: 3600     # danach wird ansible-playbook beendet
+
+git:
+  timeout_seconds: 60
+
+limits:
+  max_deployments: 1000
+  max_items_per_deployment: 50
+
 prometheus:
   job_name: ansible_deployment
   pushgateway_url: http://localhost:9091
+  # instance: mein-host     # optional, Standard: Hostname
 ```
+
+Playbooks oder Inventories, die nicht in der Whitelist stehen oder (per `..`, absolutem Pfad oder Symlink) außerhalb von `base_path` liegen, werden mit HTTP 400 abgelehnt.
+
+### Umgebungsvariablen
+| Variable | Standard | Bedeutung |
+|---|---|---|
+| `DEPLOYMENT_CONFIG` | `config.yaml` | Pfad zur Konfiguration |
+| `DEPLOYMENT_DB_PATH` | `deploymentjobs/deploymentjobs.db` | SQLite-Datenbank (API und CLI) |
+| `PUSHGATEWAY_URL` | aus `config.yaml` | überschreibt `prometheus.pushgateway_url` |
+| `LOG_LEVEL` | `INFO` | Log-Level; Logs gehen als JSON-Zeilen nach stderr |
 * Erzeuge dann einen Ordner /opt/dpl, kopiere die Beispiele und initialisiere ein git repro daraus
 ```bash
 sudo mkdir -p /opt/dpl
@@ -52,15 +79,12 @@ uv pip compile pyproject.toml -o requirements.txt
 uv run deploy.py
 ```
 
-## 🚀 Ausführung
+## 🚀 Ausführung (CLI)
 ```bash
-python deploy.py
+python deploy.py -i inventories/home/home.yaml
+# optional: -c pfad/zur/config.yaml
 ```
-
-## 🚀 Ausführung mit Invetories
-```bash
-python deploy.py -i inventories/home
-```
+Der Exit-Code ist `1`, sobald ein Playbook (nach allen Versuchen) fehlschlägt.
 
 ## 🌐 Prometheus
 Siehe: https://github.com/wlanboy/deployment_monitor/tree/main/prometheus/readme.md
@@ -92,22 +116,20 @@ docker-compose up
 # liste playbooks
 curl http://localhost:8000/playbooks
 
-# run für ein playbook und ein inventory
-curl "http://localhost:8000/run?playbook=playbooks/folder.yaml&inventory=inventories/home/home.yaml"
-
-# run für ein playbook und in inventory mit tags und skip-tags
-curl "http://localhost:8000/run?playbook=playbooks/folder.yaml&inventory=inventories/home/home.yaml&tags=create&skip_tags=check"
-curl "http://localhost:8000/run?playbook=playbooks/folder.yaml&inventory=inventories/home/home.yaml&tags=check"
+# liste inventories
+curl http://localhost:8000/inventories
 ```
+Playbooks werden über Deployments ausgeführt, siehe [Deployment Verwaltung](#deployment-verwaltung-nur-rest-api).
 
 ## Ausgabe playbooks
 ```
 ["playbooks/folder.yaml","playbooks/file.yaml"]
 ```
 
-## Ausgabe run
+## Ausgabe eines Deployment-Laufs
 ```
 ▶ Starte Playbook: playbooks/folder.yaml (Versuch 1/1)
+Tags: create
 
 PLAY [Create and verify folder in home directory] ******************************
 
@@ -128,18 +150,10 @@ localhost                  : ok=3    changed=0    unreachable=0    failed=0    s
 
 
 Ergebnis: playbooks/folder.yaml
-Startzeit: 14:09:19
-Endzeit:   14:09:24
-Dauer (s): 5
-Status:    ✅ Erfolgreich
-Versuch:   1
-Hosts:     localhost
-Tasks OK:      3
-Tasks Changed: 0
-Tasks Skipped: 1
-Tasks Failed:  0
+Start: 14:09:19 | Dauer: 5s | Status: ✅
+Hosts: localhost
 
-✔ Playbook 'playbooks/folder.yaml' erfolgreich abgeschlossen.
+RESULT=success run_id=0f6c1c2e-8a7e-4f57-a4c5-2f7d1b9e3a10
 ```
 
 ## Deployment Verwaltung (nur rest api)
@@ -181,8 +195,24 @@ curl "http://localhost:8000/deployment/76aaf757-761d-45a1-9136-ab05c02b7185"
 
 ### 🚀 4. Deployment ausführen
 ```bash
-curl "http://localhost:8000/rundeployment/76aaf757-761d-45a1-9136-ab05c02b7185"
+curl -X POST "http://localhost:8000/rundeployment/76aaf757-761d-45a1-9136-ab05c02b7185"
 ```
+* Die Ausgabe wird gestreamt. Die letzte Zeile ist maschinenlesbar: `RESULT=success|failed run_id=<uuid>`.
+* Die Run-ID steht zusätzlich im Header `X-Run-Id`.
+* Ungültige oder fehlende Playbooks/Inventories werden **vor** dem Start mit HTTP 400/404 abgelehnt.
+* Es läuft immer nur ein Deployment oder Git-Vorgang gleichzeitig; ein weiterer Aufruf bekommt HTTP 409.
+* Bricht der Client die Verbindung ab, wird `ansible-playbook` beendet.
+
+### 📜 5. Ergebnis eines Laufs abfragen
+```bash
+curl "http://localhost:8000/runs/<run_id>"
+
+# Antwort
+{"run_id":"...","deployment_id":"...","result":"success",
+ "attempts":[{"playbook":"playbooks/folder.yaml","inventory":"inventories/home/home.yaml",
+              "start_time":"...","end_time":"...","duration":2,"status":0,"attempt":1}]}
+```
+`status` ist der Exit-Code von ansible-playbook; `124` = Zeitüberschreitung, `-1` = abgebrochen.
 
 ## 📋 Git-Status anzeigen
 ```bash
@@ -192,4 +222,9 @@ curl "http://localhost:8000/git/status"
 ## 🔀 Branch wechseln
 ```bash
 curl -X POST "http://localhost:8000/git/checkout/feature-test"
+curl -X POST "http://localhost:8000/git/checkout/feature/neues-playbook"
 ```
+Branch-Namen werden validiert (keine Optionen wie `-f`, kein `..` usw.); ungültige Namen und fehlgeschlagene Checkouts liefern HTTP 400, ein fehlgeschlagenes `git fetch` HTTP 502. Zugangsdaten in URLs werden in allen Ausgaben maskiert.
+
+## ⚠️ Sicherheit
+Die API hat **keine Authentifizierung**. Wer Port 8000 erreicht, kann Playbooks mit den eingebundenen SSH-Keys ausführen. Betreibe sie nur in einem vertrauenswürdigen Netz bzw. hinter einem Reverse-Proxy mit Authentifizierung und TLS.
