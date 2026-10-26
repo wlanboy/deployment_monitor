@@ -48,7 +48,6 @@ starlette==1.10.0
     # via fastapi
 typing-extensions==4.16.0
     # via
-    #   anyio
     #   fastapi
     #   opentelemetry-api
     #   pydantic
