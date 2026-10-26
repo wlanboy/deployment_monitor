@@ -34,8 +34,19 @@ inventories:
 ansible:
   timeout_seconds: 3600     # danach wird ansible-playbook beendet
 
+deployment:
+  continue_on_failure: false  # true: nach einem fehlgeschlagenen Playbook trotzdem weitermachen
+
 git:
   timeout_seconds: 60
+  remote: origin
+  allowed_branches:           # Glob-Muster; ohne Eintrag ist jeder Branch erlaubt
+    - main
+    - feature-*
+    - release-*
+
+history:
+  retention_days: 90          # Lauf-Historie älter als N Tage löschen, 0 = nie
 
 limits:
   max_deployments: 1000
@@ -201,7 +212,9 @@ curl -X POST "http://localhost:8000/rundeployment/76aaf757-761d-45a1-9136-ab05c0
 * Die Run-ID steht zusätzlich im Header `X-Run-Id`.
 * Ungültige oder fehlende Playbooks/Inventories werden **vor** dem Start mit HTTP 400/404 abgelehnt.
 * Es läuft immer nur ein Deployment oder Git-Vorgang gleichzeitig; ein weiterer Aufruf bekommt HTTP 409.
-* Bricht der Client die Verbindung ab, wird `ansible-playbook` beendet.
+* Bricht der Client die Verbindung ab, wird `ansible-playbook` samt Kindprozessen beendet.
+* Schlägt ein Playbook (nach allen Versuchen) fehl, werden die restlichen Playbooks übersprungen – außer `deployment.continue_on_failure: true`.
+* Ist `git.allowed_branches` gesetzt, startet ein Deployment nur, wenn der ausgecheckte Branch freigegeben ist (sonst HTTP 409).
 
 ### 📜 5. Ergebnis eines Laufs abfragen
 ```bash
@@ -209,10 +222,12 @@ curl "http://localhost:8000/runs/<run_id>"
 
 # Antwort
 {"run_id":"...","deployment_id":"...","result":"success",
+ "started_at":"...","finished_at":"...",
  "attempts":[{"playbook":"playbooks/folder.yaml","inventory":"inventories/home/home.yaml",
               "start_time":"...","end_time":"...","duration":2,"status":0,"attempt":1}]}
 ```
-`status` ist der Exit-Code von ansible-playbook; `124` = Zeitüberschreitung, `-1` = abgebrochen.
+`result` ist `running`, `success`, `failed`, `aborted` (Client hat abgebrochen) oder `interrupted` (API wurde während des Laufs beendet).
+`status` ist der Exit-Code von ansible-playbook; `124` = Zeitüberschreitung, `127` = ansible-playbook nicht startbar, `-1` = abgebrochen.
 
 ## 📋 Git-Status anzeigen
 ```bash
@@ -224,7 +239,11 @@ curl "http://localhost:8000/git/status"
 curl -X POST "http://localhost:8000/git/checkout/feature-test"
 curl -X POST "http://localhost:8000/git/checkout/feature/neues-playbook"
 ```
-Branch-Namen werden validiert (keine Optionen wie `-f`, kein `..` usw.); ungültige Namen und fehlgeschlagene Checkouts liefern HTTP 400, ein fehlgeschlagenes `git fetch` HTTP 502. Zugangsdaten in URLs werden in allen Ausgaben maskiert.
+* Gibt es den Branch auf dem Remote (`git.remote`), wird der lokale Branch nach dem `fetch` auf genau diesen Stand gesetzt. Ohne Remote wird nur gewechselt.
+* Die Antwort enthält den ausgecheckten Commit (`commit`).
+* Branch-Namen werden validiert (keine Optionen wie `-f`, kein `..` usw.) → ungültig: HTTP 400; nicht in `git.allowed_branches`: HTTP 403.
+* Lokale Änderungen an versionierten Dateien: HTTP 409. Fehlgeschlagener Checkout: HTTP 400, fehlgeschlagenes `git fetch`: HTTP 502.
+* Zugangsdaten in URLs werden in allen Ausgaben maskiert.
 
 ## ⚠️ Sicherheit
 Die API hat **keine Authentifizierung**. Wer Port 8000 erreicht, kann Playbooks mit den eingebundenen SSH-Keys ausführen. Betreibe sie nur in einem vertrauenswürdigen Netz bzw. hinter einem Reverse-Proxy mit Authentifizierung und TLS.
