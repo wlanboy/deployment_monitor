@@ -17,8 +17,21 @@ inventories:
 ansible:
   timeout_seconds: 3600
 
+deployment:
+  continue_on_failure: false  # true: nach einem fehlgeschlagenen Playbook trotzdem weitermachen
+
 git:
   timeout_seconds: 60
+  remote: origin
+  # Nur diese Branches dürfen ausgecheckt und deployed werden (Glob-Muster).
+  # Ohne diesen Eintrag ist jeder Branch erlaubt.
+  allowed_branches:
+    - main
+    - feature-*
+    - release-*
+
+history:
+  retention_days: 90          # Lauf-Historie älter als N Tage löschen, 0 = nie
 
 limits:
   max_deployments: 1000
