@@ -34,7 +34,7 @@
       "title": "Total Errors",
       "datasource": "$datasource",
       "targets": [
-        { "expr": "sum(deployment_errors_total)", "refId": "B" }
+        { "expr": "sum(deployment_errors)", "refId": "B" }
       ],
       "gridPos": { "x": 4, "y": 0, "w": 4, "h": 4 }
     },
@@ -66,7 +66,7 @@
       "datasource": "$datasource",
       "targets": [
         {
-          "expr": "deployment_retries_total",
+          "expr": "deployment_retries",
           "legendFormat": "{{playbook}}",
           "refId": "E"
         }
@@ -79,7 +79,7 @@
       "datasource": "$datasource",
       "targets": [
         {
-          "expr": "deployment_failed_tasks_total",
+          "expr": "deployment_failed_tasks",
           "legendFormat": "{{playbook}}",
           "refId": "F"
         }
@@ -92,7 +92,7 @@
       "datasource": "$datasource",
       "targets": [
         {
-          "expr": "deployment_changed_tasks_total",
+          "expr": "deployment_changed_tasks",
           "legendFormat": "{{playbook}}",
           "refId": "G"
         }
@@ -105,7 +105,7 @@
       "datasource": "$datasource",
       "targets": [
         {
-          "expr": "deployment_skipped_tasks_total",
+          "expr": "deployment_skipped_tasks",
           "legendFormat": "{{playbook}}",
           "refId": "H"
         }
@@ -127,12 +127,12 @@
     },
     {
       "type": "timeseries",
-      "title": "Duration by Run ID",
+      "title": "Duration by Playbook",
       "datasource": "$datasource",
       "targets": [
         {
           "expr": "deployment_duration_seconds",
-          "legendFormat": "{{run_id}}",
+          "legendFormat": "{{playbook}}",
           "refId": "J"
         }
       ],

@@ -1,5 +1,7 @@
 base_path: /opt/dpl
 
+# Nur diese Playbooks und Inventories dürfen über die API verwendet werden
+# (Pfade relativ zu base_path, müssen innerhalb von base_path liegen).
 playbooks:
   - name: folder
     file: playbooks/folder.yaml
@@ -7,6 +9,20 @@ playbooks:
   - name: file
     file: playbooks/file.yaml
     retries: 1
+
+inventories:
+  - inventories/home/home.yaml
+  - inventories/test/test.yaml
+
+ansible:
+  timeout_seconds: 3600
+
+git:
+  timeout_seconds: 60
+
+limits:
+  max_deployments: 1000
+  max_items_per_deployment: 50
 
 prometheus:
   job_name: ansible_deployment

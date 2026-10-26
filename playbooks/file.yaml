@@ -4,7 +4,7 @@
   gather_facts: true
 
   vars:
-    folder_path: "{{ ansible_env.HOME }}/test"
+    folder_path: "{{ ansible_facts.env.HOME }}/test"
     file_path: "{{ folder_path }}/hello.txt"
 
   tasks:
