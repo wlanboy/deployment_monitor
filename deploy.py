@@ -1,6 +1,6 @@
 import argparse
+import logging
 import os
-import re
 import subprocess
 import sys
 import time
@@ -12,30 +12,21 @@ from rich import box
 from rich.console import Console
 from rich.table import Table
 
-from db import init_db, log_deployment
+import db
+from locking import WorkspaceLock
+from logging_setup import setup_logging
 from metrics import push_metrics
+from runner import TIMEOUT_STATUS, extract_hosts, parse_stats
+from validation import redact
 
 console = Console()
+log = logging.getLogger("deployment_cli")
 
-def parse_stats(output):
-    stats = {'ok': 0, 'changed': 0, 'skipped': 0, 'failed': 0}
-    match = re.search(r"ok=(\d+)\s+changed=(\d+)\s+unreachable=(\d+)\s+failed=(\d+)\s+skipped=(\d+)", output)
-    if match:
-        stats['ok'] = int(match.group(1))
-        stats['changed'] = int(match.group(2))
-        stats['failed'] = int(match.group(4))
-        stats['skipped'] = int(match.group(5))
-    return stats
 
-def extract_hosts(output):
-    hosts = set()
-    for line in output.splitlines():
-        if re.match(r"^\s*\S+\s+:.*ok=", line):
-            host = line.split(":")[0].strip()
-            hosts.add(host)
-    return sorted(hosts)
-
-def run_playbook(playbook, retries, run_id, inventory_file):
+def run_playbook(playbook, retries, run_id, inventory_file, config):
+    """Playbook mit bis zu `retries` Versuchen ausführen; liefert den Exit-Code des letzten Versuchs."""
+    timeout = (config.get("ansible") or {}).get("timeout_seconds", 3600)
+    status = TIMEOUT_STATUS
     for attempt in range(1, retries + 1):
         console.rule(f"[bold cyan]▶ Starte Playbook: {playbook} (Versuch {attempt}/{retries})")
 
@@ -44,18 +35,26 @@ def run_playbook(playbook, retries, run_id, inventory_file):
 
         cmd = ["ansible-playbook", playbook, "-i", inventory_file]
         console.print(cmd)
-        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=timeout)
+            status = result.returncode
+            stdout = redact(result.stdout)
+            error_msg = redact(result.stderr.strip()) if status != 0 else ""
+        except subprocess.TimeoutExpired:
+            status = TIMEOUT_STATUS
+            stdout = ""
+            error_msg = f"Zeitüberschreitung nach {timeout}s"
         end_ts = time.time()
         end = datetime.now().astimezone()
 
         duration = int(end_ts - start_ts)
-        status = result.returncode
-        error_msg = result.stderr.strip() if status != 0 else ""
-        stats = parse_stats(result.stdout)
-        hosts = extract_hosts(result.stdout)
+        stats = parse_stats(stdout)
+        hosts = extract_hosts(stdout)
 
-        log_deployment(playbook, start.isoformat(), end.isoformat(), duration, status, attempt)
-        push_metrics(playbook, duration, status, attempt, stats, error_msg, run_id, config)
+        db.log_run(run_id, playbook, inventory_file, start.isoformat(), end.isoformat(), duration, status, attempt)
+        push_metrics(playbook, duration, status, attempt, stats, config)
+        log.info("playbook_finished", extra={"run_id": run_id, "playbook": playbook, "status": status,
+                                             "attempt": attempt, "duration_seconds": duration})
 
         table = Table(title=f"Ergebnis: {playbook}", box=box.SIMPLE)
         table.add_column("Feld", style="bold")
@@ -79,37 +78,50 @@ def run_playbook(playbook, retries, run_id, inventory_file):
         else:
             console.print(f"[green]Playbook '{playbook}' erfolgreich abgeschlossen.[/green]")
             break
+    return status
 
-def run_playbook_streamed(playbook, inventory_file):
-    cmd = ["ansible-playbook", playbook, "-i", inventory_file]
-    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
-    assert process.stdout is not None
-    yield from process.stdout
-    process.stdout.close()
-    process.wait()
 
-if __name__ == "__main__":
+def main(argv=None):
     parser = argparse.ArgumentParser(description="Deployment Runner")
     parser.add_argument("--inventory", "-i", required=True, help="Pfad zur Inventar-Datei")
-    args = parser.parse_args()
+    parser.add_argument("--config", "-c", default="config.yaml", help="Pfad zur config.yaml")
+    args = parser.parse_args(argv)
 
+    setup_logging()
     inventory_file = args.inventory
     if not os.path.isfile(inventory_file):
         console.print(f"[red]Inventar-Datei nicht gefunden: {inventory_file}[/red]")
-        sys.exit(1)
+        return 1
 
-    init_db()
-    with open("config.yaml") as f:
-        config = yaml.safe_load(f)
+    with open(args.config) as f:
+        config = yaml.safe_load(f) or {}
+    db.init_db()
 
-    run_id = str(uuid.uuid4())
-    console.rule(f"[bold magenta]🚀 Deployment gestartet (Run-ID: {run_id})")
-    total_duration = 0
+    lock = WorkspaceLock(os.path.join(os.path.dirname(db.DB_PATH) or ".", "workspace.lock"))
+    if not lock.acquire():
+        console.print("[red]Es läuft bereits ein Deployment oder Git-Vorgang.[/red]")
+        return 1
 
-    for pb in config["playbooks"]:
-        start = time.time()
-        run_playbook(pb["file"], pb["retries"], run_id, inventory_file)
-        total_duration += int(time.time() - start)
+    try:
+        run_id = str(uuid.uuid4())
+        console.rule(f"[bold magenta]🚀 Deployment gestartet (Run-ID: {run_id})")
+        total_duration = 0
+        failed = []
 
+        for pb in config.get("playbooks") or []:
+            start = time.time()
+            if run_playbook(pb["file"], max(1, int(pb.get("retries", 1))), run_id, inventory_file, config) != 0:
+                failed.append(pb["file"])
+            total_duration += int(time.time() - start)
+    finally:
+        lock.release()
+
+    if failed:
+        console.rule(f"[bold red]❌ Fehlgeschlagen: {', '.join(failed)} (Gesamtdauer: {total_duration}s)")
+        return 1
     console.rule(f"[bold green]✅ Alle Playbooks abgeschlossen (Gesamtdauer: {total_duration}s)")
+    return 0
 
+
+if __name__ == "__main__":
+    sys.exit(main())
