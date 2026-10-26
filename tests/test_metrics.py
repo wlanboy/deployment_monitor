@@ -13,12 +13,12 @@ CONFIG = {
 }
 
 STATS_OK = {"ok": 5, "changed": 2, "skipped": 1, "failed": 0}
-STATS_FAILED = {"ok": 1, "changed": 0, "skipped": 0, "failed": 2}
+STATS_FAILED = {"ok": 1, "changed": 0, "unreachable": 1, "skipped": 0, "failed": 2}
 
 EXPECTED_METRICS = {
     "deployment_duration_seconds", "deployment_status", "deployment_errors", "deployment_retries",
     "deployment_ok_tasks", "deployment_changed_tasks", "deployment_skipped_tasks", "deployment_failed_tasks",
-    "deployment_task_count", "deployment_last_run_timestamp_seconds",
+    "deployment_unreachable_hosts", "deployment_task_count", "deployment_last_run_timestamp_seconds",
 }
 
 
@@ -69,6 +69,7 @@ class TestPushMetrics:
         assert samples["deployment_retries"].value == 3
         assert samples["deployment_failed_tasks"].value == 2
         assert samples["deployment_task_count"].value == 3
+        assert samples["deployment_unreachable_hosts"].value == 1
 
     def test_hostile_playbook_name_cannot_inject_metrics(self):
         playbook = 'x"} 1\ninjected_metric{a="b'

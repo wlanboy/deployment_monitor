@@ -1,15 +1,18 @@
 import asyncio
 import os
 import subprocess
+import threading
 import time
 
 import pytest
+from conftest import wait_until_gone
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 import api
 import db
 from locking import WorkspaceLock
-from runner import ABORTED_STATUS, TIMEOUT_STATUS
+from runner import ABORTED_STATUS, NOT_STARTED_STATUS, TIMEOUT_STATUS
 
 # Realistic ansible PLAY RECAP line
 RECAP_LINE = "web01                      : ok=4 changed=1 unreachable=0 failed=0 skipped=2"
@@ -83,11 +86,23 @@ class TestParseStats:
 
     def test_no_match_returns_zeros(self):
         stats = api.parse_stats("nothing relevant here")
-        assert stats == {"ok": 0, "changed": 0, "skipped": 0, "failed": 0}
+        assert stats == {"ok": 0, "changed": 0, "unreachable": 0, "skipped": 0, "failed": 0}
 
     def test_failed_tasks(self):
         line = "db01                       : ok=1 changed=0 unreachable=0 failed=2 skipped=0"
         assert api.parse_stats(line)["failed"] == 2
+
+    def test_sums_all_hosts(self):
+        output = (
+            "web01                      : ok=5 changed=2 unreachable=0 failed=0 skipped=1 rescued=0 ignored=0\n"
+            "web02                      : ok=1 changed=0 unreachable=0 failed=3 skipped=0 rescued=0 ignored=0\n"
+            "web03                      : ok=0 changed=0 unreachable=1 failed=0 skipped=0 rescued=0 ignored=0"
+        )
+        assert api.parse_stats(output) == {"ok": 6, "changed": 2, "unreachable": 1, "failed": 3, "skipped": 1}
+        assert api.extract_hosts(output) == ["web01", "web02", "web03"]
+
+    def test_task_output_mentioning_counters_is_ignored(self):
+        assert api.parse_stats("TASK [debug] msg: ok=7 changed=7 unreachable=0 failed=0 skipped=0")["ok"] == 0
 
 
 class TestExtractHosts:
@@ -234,14 +249,80 @@ class TestRunDeployment:
         assert response.status_code == 200
         run_id = response.headers["X-Run-Id"]
         body = response.text
-        assert f"ARGS: {workspace / SITE} -i {workspace / INVENTORY} --tags create --skip-tags check" in body
+        assert f"ARGS: {workspace / SITE} -i {workspace / INVENTORY} --tags=create --skip-tags=check" in body
         assert body.rstrip().endswith(f"RESULT=success run_id={run_id}")
         assert [call[0] for call in pushed] == [SITE]
 
         run = client.get(f"/runs/{run_id}").json()
         assert run["result"] == "success"
         assert run["deployment_id"] == deployment_id
+        assert run["finished_at"] is not None
         assert run["attempts"][0]["status"] == 0
+
+    def test_streaming_headers(self, client, workspace, fake_ansible):
+        response = client.post(f"/rundeployment/{deployment_with(client, SITE)}")
+        assert response.headers["X-Accel-Buffering"] == "no"
+        assert response.headers["Cache-Control"] == "no-cache"
+
+    def test_stats_summed_over_hosts(self, client, workspace, fake_ansible, monkeypatch, pushed):
+        monkeypatch.setenv("FAKE_ANSIBLE_OUTPUT",
+                           "web02                      : ok=1 changed=0 unreachable=1 failed=3 skipped=0")
+        response = client.post(f"/rundeployment/{deployment_with(client, SITE)}")
+        assert "Hosts: localhost, web02" in response.text
+        assert "Nicht erreichbar: 1 Host(s)" in response.text
+        stats = pushed[0][4]
+        assert stats == {"ok": 3, "changed": 1, "unreachable": 1, "failed": 3, "skipped": 0}
+
+    def test_stops_after_failure(self, client, workspace, fake_ansible, monkeypatch):
+        monkeypatch.setenv("FAKE_ANSIBLE_EXIT", "2")
+        response = client.post(f"/rundeployment/{deployment_with(client, SITE, OTHER)}")
+        assert [line for line in response.text.splitlines() if line.startswith("ARGS:")] == [
+            f"ARGS: {workspace / SITE} -i {workspace / INVENTORY}"]
+        assert f"übersprungen: {OTHER}" in response.text
+        assert "RESULT=failed" in response.text
+
+    def test_continue_on_failure(self, client, workspace, fake_ansible, monkeypatch):
+        api.config["deployment"] = {"continue_on_failure": True}
+        monkeypatch.setenv("FAKE_ANSIBLE_EXIT", "2")
+        response = client.post(f"/rundeployment/{deployment_with(client, SITE, OTHER)}")
+        assert len([line for line in response.text.splitlines() if line.startswith("ARGS:")]) == 3
+        assert "übersprungen" not in response.text
+
+    def test_missing_ansible_binary(self, client, workspace, monkeypatch, tmp_path):
+        empty = tmp_path / "empty-bin"
+        empty.mkdir()
+        monkeypatch.setenv("PATH", str(empty))
+        response = client.post(f"/rundeployment/{deployment_with(client, OTHER)}")
+        assert response.status_code == 200
+        assert "konnte nicht gestartet werden" in response.text
+        assert "Versuch 2/2" not in response.text
+        assert "RESULT=failed" in response.text
+        run = client.get(f"/runs/{response.headers['X-Run-Id']}").json()
+        assert [a["status"] for a in run["attempts"]] == [NOT_STARTED_STATUS]
+
+    def test_stored_tags_are_rechecked(self, client, workspace, fake_ansible):
+        deployment_id = create_deployment(client)
+        with db.connect() as conn:
+            conn.execute(
+                "INSERT INTO deployment_items (deployment_id, position, playbook, inventory, tags) VALUES (?, 1, ?, ?, ?)",
+                (deployment_id, SITE, INVENTORY, "--check"),
+            )
+        assert client.post(f"/rundeployment/{deployment_id}").status_code == 400
+
+    def test_validation_happens_under_lock(self, client, workspace, fake_ansible):
+        deployment_id = deployment_with(client, SITE)
+        api.config["playbooks"] = []
+        lock = WorkspaceLock(api.lock_path())
+        assert lock.acquire()
+        try:
+            # Gesperrt: 409, bevor überhaupt geprüft wird
+            assert client.post(f"/rundeployment/{deployment_id}").status_code == 409
+        finally:
+            lock.release()
+        assert client.post(f"/rundeployment/{deployment_id}").status_code == 400
+        # Nach dem Validierungsfehler ist der Lock wieder frei
+        assert lock.acquire()
+        lock.release()
 
     def test_failure_reported(self, client, workspace, fake_ansible, monkeypatch):
         monkeypatch.setenv("FAKE_ANSIBLE_EXIT", "2")
@@ -271,9 +352,10 @@ class TestRunDeployment:
         assert "hunter2" not in response.text
         assert "https://***@git.example.com/x" in response.text
 
-    def test_timeout_kills_playbook(self, client, workspace, fake_ansible, monkeypatch):
+    def test_timeout_kills_playbook(self, client, workspace, fake_ansible, monkeypatch, tmp_path):
         api.config["ansible"]["timeout_seconds"] = 0.5
         monkeypatch.setenv("FAKE_ANSIBLE_SLEEP", "20")
+        monkeypatch.setenv("FAKE_ANSIBLE_CHILD_PIDFILE", str(tmp_path / "child.pid"))
         started = time.monotonic()
         response = client.post(f"/rundeployment/{deployment_with(client, SITE)}")
         assert time.monotonic() - started < 10
@@ -281,6 +363,7 @@ class TestRunDeployment:
         assert "RESULT=failed" in response.text
         run = client.get(f"/runs/{response.headers['X-Run-Id']}").json()
         assert run["attempts"][0]["status"] == TIMEOUT_STATUS
+        assert wait_until_gone(int((tmp_path / "child.pid").read_text()))
 
     def test_conflict_while_locked(self, client, workspace, fake_ansible):
         deployment_id = deployment_with(client, SITE)
@@ -306,6 +389,7 @@ class TestRunDeployment:
         """Bricht der Client ab, darf ansible-playbook nicht weiterlaufen."""
         pidfile = tmp_path / "ansible.pid"
         monkeypatch.setenv("FAKE_ANSIBLE_PIDFILE", str(pidfile))
+        monkeypatch.setenv("FAKE_ANSIBLE_CHILD_PIDFILE", str(tmp_path / "child.pid"))
         monkeypatch.setenv("FAKE_ANSIBLE_SLEEP", "30")
         plan = [api.PlannedItem(SITE, INVENTORY, str(workspace / SITE), str(workspace / INVENTORY), None, None, 1)]
 
@@ -314,6 +398,11 @@ class TestRunDeployment:
             async for chunk in stream:
                 if chunk.startswith("ARGS:"):
                     break
+            child_pidfile = tmp_path / "child.pid"
+            for _ in range(50):
+                if child_pidfile.exists() and child_pidfile.read_text().strip():
+                    break
+                await asyncio.sleep(0.1)
             await stream.aclose()
             pid = int(pidfile.read_text())
             for _ in range(50):
@@ -325,6 +414,7 @@ class TestRunDeployment:
             return False
 
         assert asyncio.run(scenario())
+        assert wait_until_gone(int((tmp_path / "child.pid").read_text()))
         with db.connect() as conn:
             (status,) = conn.execute("SELECT status FROM playbook_runs WHERE run_id = 'run-abort'").fetchone()
         assert status == ABORTED_STATUS
@@ -402,3 +492,193 @@ class TestGit:
         assert response.status_code == 502
         assert "hunter2" not in response.text
         assert current_branch(repo) == "main"
+
+
+class TestRunState:
+    def test_running_while_streaming(self, workspace, fake_ansible, monkeypatch):
+        monkeypatch.setenv("FAKE_ANSIBLE_SLEEP", "30")
+        plan = [api.PlannedItem(SITE, INVENTORY, str(workspace / SITE), str(workspace / INVENTORY), None, None, 1)]
+        db.start_run("run-live", "dep-live")
+
+        async def scenario():
+            stream = api.stream_deployment(plan, "run-live", "dep-live")
+            async for chunk in stream:
+                if chunk.startswith("ARGS:"):
+                    break
+            state = api.get_run("run-live")["result"]
+            await stream.aclose()
+            return state
+
+        assert asyncio.run(scenario()) == db.RUN_RUNNING
+
+    def test_disconnect_marks_run_aborted_and_releases_lock(self, isolated_db):
+        """Bricht der Client ab, wird der Generator geschlossen und on_close aufgerufen."""
+        db.start_run("run-gone")
+        lock = WorkspaceLock(api.lock_path())
+        assert lock.acquire()
+        closed = []
+
+        async def body():
+            yield "erste Zeile\n"
+            yield "zweite Zeile\n"
+            closed.append("nicht erreicht")
+
+        def on_close():
+            db.finish_run("run-gone", db.RUN_ABORTED)
+            lock.release()
+
+        async def receive():
+            await asyncio.sleep(10)
+            return {"type": "http.disconnect"}
+
+        async def send(message):
+            if message.get("body"):
+                raise OSError("client gone")
+
+        response = api.ClosingStreamingResponse(body(), on_close)
+        scope = {"type": "http", "asgi": {"spec_version": "2.4"}}
+        with pytest.raises(Exception):  # noqa: B017 - ClientDisconnect
+            asyncio.run(response(scope, receive, send))
+
+        assert closed == []
+        assert api.get_run("run-gone")["result"] == db.RUN_ABORTED
+        assert lock.acquire()
+        lock.release()
+
+    def test_interrupted_runs_marked_on_startup(self, isolated_db):
+        db.start_run("run-crashed")
+        api.recover_interrupted_runs()
+        assert api.get_run("run-crashed")["result"] == db.RUN_INTERRUPTED
+
+    def test_running_run_untouched_while_locked(self, isolated_db):
+        db.start_run("run-other-worker")
+        lock = WorkspaceLock(api.lock_path())
+        assert lock.acquire()
+        try:
+            api.recover_interrupted_runs()
+        finally:
+            lock.release()
+        assert api.get_run("run-other-worker")["result"] == db.RUN_RUNNING
+
+    def test_finished_result_not_overwritten(self, isolated_db):
+        db.start_run("run-done")
+        db.finish_run("run-done", db.RUN_SUCCESS)
+        db.finish_run("run-done", db.RUN_ABORTED)
+        assert api.get_run("run-done")["result"] == db.RUN_SUCCESS
+
+
+class TestConcurrentLimits:
+    def test_parallel_creates_respect_limit(self, workspace):
+        results = []
+
+        def create(i):
+            try:
+                api.create_deployment(f"d{i}")
+                results.append("ok")
+            except HTTPException as e:
+                results.append(e.status_code)
+
+        threads = [threading.Thread(target=create, args=(i,)) for i in range(20)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert results.count("ok") == 5
+        assert results.count(409) == 15
+
+    def test_parallel_items_get_unique_positions(self, workspace):
+        api.config["limits"]["max_items_per_deployment"] = 50
+        deployment_id = api.create_deployment("parallel")["id"]
+        threads = [threading.Thread(target=api.add_playbook_to_deployment, args=(deployment_id, SITE, INVENTORY, None, None))
+                   for _ in range(20)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        with db.connect() as conn:
+            positions = [r[0] for r in conn.execute("SELECT position FROM deployment_items")]
+        assert sorted(positions) == list(range(1, 21))
+
+
+@pytest.fixture
+def remote_repo(repo, tmp_path):
+    """repo mit Remote "origin"; zusätzlich ein zweiter Clone zum Pushen neuer Commits."""
+    origin = tmp_path / "origin.git"
+    git(tmp_path, "init", "-q", "--bare", str(origin))
+    git(repo, "remote", "add", "origin", str(origin))
+    git(repo, "push", "-q", "origin", "main", "feature/x", "release-1.0")
+    upstream = tmp_path / "upstream"
+    git(tmp_path, "clone", "-q", str(origin), str(upstream))
+    return repo, upstream
+
+
+def push_commit(upstream, branch, message):
+    git(upstream, "checkout", "-q", branch)
+    git(upstream, "commit", "-q", "--allow-empty", "-m", message)
+    git(upstream, "push", "-q", "origin", branch)
+    return git(upstream, "rev-parse", "HEAD")
+
+
+class TestGitRemote:
+    def test_checkout_gets_latest_remote_commit(self, client, remote_repo):
+        repo, upstream = remote_repo
+        new_commit = push_commit(upstream, "feature/x", "neu")
+        response = client.post("/git/checkout/feature/x")
+        assert response.status_code == 200
+        assert response.json()["commit"] == new_commit
+        assert git(repo, "rev-parse", "HEAD") == new_commit
+
+    def test_existing_stale_local_branch_is_updated(self, client, remote_repo):
+        repo, upstream = remote_repo
+        assert client.post("/git/checkout/feature/x").status_code == 200
+        assert client.post("/git/checkout/main").status_code == 200
+        new_commit = push_commit(upstream, "feature/x", "v2")
+        assert client.post("/git/checkout/feature/x").status_code == 200
+        assert git(repo, "rev-parse", "HEAD") == new_commit
+        assert git(repo, "rev-parse", "--abbrev-ref", "@{u}") == "origin/feature/x"
+
+    def test_local_only_branch_still_works(self, client, remote_repo):
+        repo, _ = remote_repo
+        git(repo, "branch", "feature-local")
+        assert client.post("/git/checkout/feature-local").status_code == 200
+        assert current_branch(repo) == "feature-local"
+
+    def test_dirty_worktree_rejected(self, client, remote_repo):
+        repo, _ = remote_repo
+        (repo / SITE).write_text("- hosts: all\n")
+        response = client.post("/git/checkout/feature/x")
+        assert response.status_code == 409
+        assert SITE in response.json()["detail"]["local_changes"]
+        assert current_branch(repo) == "main"
+
+
+class TestBranchWhitelist:
+    @pytest.fixture(autouse=True)
+    def restrict(self, workspace):
+        api.config["git"]["allowed_branches"] = ["main", "release-*"]
+
+    def test_allowed_branch(self, client, repo):
+        assert client.post("/git/checkout/release-1.0").status_code == 200
+
+    def test_disallowed_branch(self, client, repo):
+        assert client.post("/git/checkout/feature/x").status_code == 403
+        assert current_branch(repo) == "main"
+
+    def test_run_refused_on_disallowed_branch(self, client, repo, fake_ansible):
+        deployment_id = deployment_with(client, SITE)
+        git(repo, "checkout", "-q", "feature/x")
+        response = client.post(f"/rundeployment/{deployment_id}")
+        assert response.status_code == 409
+        assert "feature/x" in response.json()["detail"]
+
+    def test_run_refused_on_detached_head(self, client, repo, fake_ansible):
+        deployment_id = deployment_with(client, SITE)
+        git(repo, "checkout", "-q", "--detach")
+        assert client.post(f"/rundeployment/{deployment_id}").status_code == 409
+
+    def test_run_allowed_on_allowed_branch(self, client, repo, fake_ansible):
+        assert client.post(f"/rundeployment/{deployment_with(client, SITE)}").status_code == 200
+
+    def test_empty_list_allows_nothing(self, client, repo):
+        api.config["git"]["allowed_branches"] = []
+        assert client.post("/git/checkout/main").status_code == 403

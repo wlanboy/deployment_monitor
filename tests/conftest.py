@@ -2,6 +2,7 @@ import os
 import stat
 import sys
 import tempfile
+import time
 
 import pytest
 
@@ -23,7 +24,12 @@ FAKE_ANSIBLE = """#!/bin/sh
 [ -n "$FAKE_ANSIBLE_PIDFILE" ] && echo $$ > "$FAKE_ANSIBLE_PIDFILE"
 echo "ARGS: $*"
 [ -n "$FAKE_ANSIBLE_OUTPUT" ] && echo "$FAKE_ANSIBLE_OUTPUT"
-[ -n "$FAKE_ANSIBLE_SLEEP" ] && sleep "$FAKE_ANSIBLE_SLEEP"
+if [ -n "$FAKE_ANSIBLE_SLEEP" ]; then
+  # Kindprozess wie bei ansible-Workern/ssh – muss beim Abbruch mit beendet werden
+  sleep "$FAKE_ANSIBLE_SLEEP" &
+  [ -n "$FAKE_ANSIBLE_CHILD_PIDFILE" ] && echo $! > "$FAKE_ANSIBLE_CHILD_PIDFILE"
+  wait
+fi
 if [ -n "$FAKE_ANSIBLE_FAIL_ONCE" ] && [ ! -e "$FAKE_ANSIBLE_FAIL_ONCE" ]; then
   touch "$FAKE_ANSIBLE_FAIL_ONCE"
   echo "localhost                  : ok=1 changed=0 unreachable=0 failed=1 skipped=0"
@@ -51,6 +57,18 @@ def fake_ansible(tmp_path, monkeypatch):
     script.chmod(script.stat().st_mode | stat.S_IXUSR)
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
     for var in ("FAKE_ANSIBLE_EXIT", "FAKE_ANSIBLE_SLEEP", "FAKE_ANSIBLE_OUTPUT",
-                "FAKE_ANSIBLE_FAIL_ONCE", "FAKE_ANSIBLE_PIDFILE"):
+                "FAKE_ANSIBLE_FAIL_ONCE", "FAKE_ANSIBLE_PIDFILE", "FAKE_ANSIBLE_CHILD_PIDFILE"):
         monkeypatch.delenv(var, raising=False)
     return script
+
+
+def wait_until_gone(pid, seconds=10.0):
+    """True, sobald der Prozess nicht mehr existiert."""
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        time.sleep(0.1)
+    return False
