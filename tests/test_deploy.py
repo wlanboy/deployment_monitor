@@ -1,3 +1,9 @@
+import pytest
+import yaml
+
+import db
+import deploy
+import metrics
 from deploy import extract_hosts, parse_stats
 
 # Realistic ansible PLAY RECAP line
@@ -60,3 +66,37 @@ class TestExtractHosts:
         )
         hosts = extract_hosts(output)
         assert hosts == ["web01"]
+
+
+class TestMain:
+    @pytest.fixture
+    def setup(self, tmp_path, monkeypatch, isolated_db, fake_ansible):
+        monkeypatch.setattr(deploy, "push_metrics", lambda *args: True)
+        inventory = tmp_path / "inventory.yaml"
+        inventory.write_text("all: {}\n")
+        config = tmp_path / "config.yaml"
+        config.write_text(yaml.safe_dump({"playbooks": [{"file": "site.yaml", "retries": 2}]}))
+        return ["-i", str(inventory), "-c", str(config)]
+
+    def test_success_exit_code(self, setup):
+        assert deploy.main(setup) == 0
+
+    def test_failure_exit_code(self, setup, monkeypatch):
+        monkeypatch.setenv("FAKE_ANSIBLE_EXIT", "2")
+        assert deploy.main(setup) == 1
+        with db.connect() as conn:
+            assert [r[0] for r in conn.execute("SELECT attempt FROM playbook_runs")] == [1, 2]
+
+    def test_missing_inventory(self, setup, tmp_path):
+        assert deploy.main(["-i", str(tmp_path / "missing.yaml")]) == 1
+
+    def test_timeout(self, setup, tmp_path, monkeypatch):
+        config = tmp_path / "config.yaml"
+        config.write_text(yaml.safe_dump({"playbooks": [{"file": "site.yaml"}], "ansible": {"timeout_seconds": 0.5}}))
+        monkeypatch.setenv("FAKE_ANSIBLE_SLEEP", "20")
+        assert deploy.main(["-i", setup[1], "-c", str(config)]) == 1
+
+    def test_push_failure_does_not_crash(self, setup, monkeypatch):
+        monkeypatch.setattr(deploy, "push_metrics", metrics.push_metrics)
+        monkeypatch.setenv("PUSHGATEWAY_URL", "http://127.0.0.1:9")
+        assert deploy.main(setup) == 0

@@ -1,71 +1,66 @@
-from unittest.mock import MagicMock, patch
+import sqlite3
+
+import pytest
 
 import db
 
 
+def tables(path):
+    with sqlite3.connect(path) as conn:
+        return {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+
+
 class TestInitDb:
-    def test_creates_deployments_table(self):
-        mock_conn = MagicMock()
-        mock_cursor = MagicMock()
-        mock_conn.cursor.return_value = mock_cursor
+    def test_creates_tables(self, isolated_db):
+        assert {"deployments", "deployment_items", "playbook_runs"} <= tables(isolated_db)
 
-        with patch("db.sqlite3.connect", return_value=mock_conn):
-            db.init_db()
+    def test_idempotent(self, isolated_db):
+        db.init_db()
+        db.init_db()
 
-        sql = mock_cursor.execute.call_args[0][0]
-        assert "CREATE TABLE IF NOT EXISTS deployments" in sql
+    def test_migrates_items_without_position(self, tmp_path, monkeypatch):
+        path = str(tmp_path / "old.db")
+        conn = sqlite3.connect(path)
+        conn.execute("CREATE TABLE deployments (id TEXT PRIMARY KEY, name TEXT)")
+        conn.execute("CREATE TABLE deployment_items (deployment_id TEXT, playbook TEXT, inventory TEXT, tags TEXT, skip_tags TEXT)")
+        conn.execute("INSERT INTO deployment_items VALUES ('d', 'a.yaml', 'i', NULL, NULL)")
+        conn.execute("INSERT INTO deployment_items VALUES ('d', 'b.yaml', 'i', NULL, NULL)")
+        conn.commit()
+        conn.close()
 
-    def test_commits_and_closes(self):
-        mock_conn = MagicMock()
-        mock_conn.cursor.return_value = MagicMock()
+        monkeypatch.setattr(db, "DB_PATH", path)
+        db.init_db()
 
-        with patch("db.sqlite3.connect", return_value=mock_conn):
-            db.init_db()
-
-        mock_conn.commit.assert_called_once()
-        mock_conn.close.assert_called_once()
-
-    def test_connects_to_correct_db(self):
-        mock_conn = MagicMock()
-        mock_conn.cursor.return_value = MagicMock()
-
-        with patch("db.sqlite3.connect", return_value=mock_conn) as mock_connect:
-            db.init_db()
-
-        mock_connect.assert_called_once_with("deployment.db")
+        with db.connect() as conn:
+            rows = conn.execute("SELECT playbook, position FROM deployment_items ORDER BY position").fetchall()
+        assert rows == [("a.yaml", 1), ("b.yaml", 2)]
 
 
-class TestLogDeployment:
-    def test_inserts_correct_values(self):
-        mock_conn = MagicMock()
-        mock_cursor = MagicMock()
-        mock_conn.cursor.return_value = mock_cursor
+class TestConnect:
+    def test_commits_on_success(self, isolated_db):
+        with db.connect() as conn:
+            conn.execute("INSERT INTO deployments (id, name) VALUES ('1', 'a')")
+        with db.connect() as conn:
+            assert conn.execute("SELECT COUNT(*) FROM deployments").fetchone()[0] == 1
 
-        with patch("db.sqlite3.connect", return_value=mock_conn):
-            db.log_deployment("site.yml", "2024-01-01T10:00:00", "2024-01-01T10:01:00", 60, 0, 1)
+    def test_rolls_back_on_error(self, isolated_db):
+        with pytest.raises(RuntimeError), db.connect() as conn:
+            conn.execute("INSERT INTO deployments (id, name) VALUES ('1', 'a')")
+            raise RuntimeError
+        with db.connect() as conn:
+            assert conn.execute("SELECT COUNT(*) FROM deployments").fetchone()[0] == 0
 
-        sql, params = mock_cursor.execute.call_args[0]
-        assert "INSERT INTO deployments" in sql
-        assert params == ("site.yml", "2024-01-01T10:00:00", "2024-01-01T10:01:00", 60, 0, 1)
 
-    def test_commits_and_closes(self):
-        mock_conn = MagicMock()
-        mock_conn.cursor.return_value = MagicMock()
+class TestLogRun:
+    def test_inserts_correct_values(self, isolated_db):
+        db.log_run("run-1", "site.yml", "inv.yaml", "2024-01-01T10:00:00", "2024-01-01T10:01:00", 60, 0, 1, "dep-1")
+        with db.connect() as conn:
+            row = conn.execute(
+                "SELECT run_id, deployment_id, playbook, inventory, start_time, end_time, duration, status, attempt FROM playbook_runs"
+            ).fetchone()
+        assert row == ("run-1", "dep-1", "site.yml", "inv.yaml", "2024-01-01T10:00:00", "2024-01-01T10:01:00", 60, 0, 1)
 
-        with patch("db.sqlite3.connect", return_value=mock_conn):
-            db.log_deployment("pb.yml", "s", "e", 10, 1, 2)
-
-        mock_conn.commit.assert_called_once()
-        mock_conn.close.assert_called_once()
-
-    def test_non_zero_status_stored(self):
-        mock_conn = MagicMock()
-        mock_cursor = MagicMock()
-        mock_conn.cursor.return_value = mock_cursor
-
-        with patch("db.sqlite3.connect", return_value=mock_conn):
-            db.log_deployment("fail.yml", "s", "e", 5, 2, 3)
-
-        _, params = mock_cursor.execute.call_args[0]
-        assert params[4] == 2  # status
-        assert params[5] == 3  # retries
+    def test_without_deployment(self, isolated_db):
+        db.log_run("run-2", "fail.yml", "inv", "s", "e", 5, 2, 3)
+        with db.connect() as conn:
+            assert conn.execute("SELECT deployment_id, status, attempt FROM playbook_runs").fetchone() == (None, 2, 3)
