@@ -1,11 +1,13 @@
 import asyncio
+import fnmatch
 import logging
 import os
+import re
 import signal
 import subprocess
 import time
 import uuid
-from collections.abc import AsyncGenerator, Iterable
+from collections.abc import AsyncGenerator, Callable, Iterable
 from contextlib import aclosing
 from dataclasses import dataclass
 from datetime import datetime
@@ -20,7 +22,14 @@ import db
 from locking import WorkspaceLock
 from logging_setup import setup_logging
 from metrics import push_metrics
-from runner import ABORTED_STATUS, TIMEOUT_STATUS, extract_hosts, parse_stats
+from runner import (
+    ABORTED_STATUS,
+    NOT_STARTED_STATUS,
+    TIMEOUT_STATUS,
+    extract_hosts,
+    is_recap_line,
+    parse_stats,
+)
 from validation import (
     BranchNameError,
     PathNotAllowedError,
@@ -41,7 +50,6 @@ NAME_PATTERN = r"^[\w .-]+$"
 TAGS_PATTERN = r"^[\w.][\w.-]*(,[\w.][\w.-]*)*$"
 STREAM_READ_LIMIT = 1024 * 1024
 KILL_GRACE_SECONDS = 5
-
 
 
 def ansible_env() -> dict[str, str]:
@@ -92,6 +100,14 @@ def allowed_inventories() -> list[str]:
     return [str(inv) for inv in config.get("inventories") or []]
 
 
+def branch_allowed(branch: str) -> bool:
+    """Ohne git.allowed_branches ist jeder Branch erlaubt, sonst nur passende Glob-Muster."""
+    patterns = setting("git", "allowed_branches", None)
+    if patterns is None:
+        return True
+    return any(fnmatch.fnmatchcase(branch, str(pattern)) for pattern in patterns)
+
+
 def lock_path() -> str:
     return os.path.join(os.path.dirname(db.DB_PATH) or ".", "workspace.lock")
 
@@ -104,6 +120,12 @@ def resolve_or_reject(relative: str, allowed: Iterable[str], kind: str) -> str:
         raise HTTPException(status_code=400, detail=f"{kind}: {e}") from None
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail=f"{kind} nicht gefunden: {relative}") from None
+
+
+def check_tags(value: str | None, kind: str) -> None:
+    # Ältere Einträge stammen evtl. aus der Zeit vor der Validierung beim Anlegen
+    if value is not None and not re.fullmatch(TAGS_PATTERN, value):
+        raise HTTPException(status_code=400, detail=f"{kind} ungültig: {value!r}")
 
 
 def acquire_workspace_lock() -> WorkspaceLock:
@@ -154,11 +176,12 @@ async def run_playbook_streamed(item: PlannedItem, run_id: str, deployment_id: s
         if item.skip_tags:
             yield f"Skip-Tags: {item.skip_tags}\n"
 
+        # "--opt=wert" statt "--opt wert": der Wert kann nie als eigene Option gelesen werden
         cmd = ["ansible-playbook", item.playbook_path, "-i", item.inventory_path]
         if item.tags:
-            cmd += ["--tags", item.tags]
+            cmd.append(f"--tags={item.tags}")
         if item.skip_tags:
-            cmd += ["--skip-tags", item.skip_tags]
+            cmd.append(f"--skip-tags={item.skip_tags}")
 
         start = datetime.now().astimezone()
         start_ts = time.monotonic()
@@ -166,12 +189,22 @@ async def run_playbook_streamed(item: PlannedItem, run_id: str, deployment_id: s
                       "inventory": item.inventory, "attempt": attempt}
         log.info("playbook_started", extra=log_fields)
 
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
-            start_new_session=True, limit=STREAM_READ_LIMIT, env=ansible_env(),
-        )
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+                start_new_session=True, limit=STREAM_READ_LIMIT, env=ansible_env(),
+            )
+        except OSError as e:
+            status = NOT_STARTED_STATUS
+            log.error("playbook_not_started", extra={**log_fields, "error": str(e)})
+            db.log_run(run_id, item.playbook, item.inventory, start.isoformat(),
+                       datetime.now().astimezone().isoformat(), 0, status, attempt, deployment_id)
+            yield f"\n❌ ansible-playbook konnte nicht gestartet werden: {e.strerror or e}\n"
+            break
+
         assert proc.stdout is not None
-        output_lines: list[str] = []
+        # Nur die PLAY RECAP-Zeilen behalten – die restliche Ausgabe geht direkt an den Client
+        recap_lines: list[str] = []
         deadline = loop.time() + timeout
         try:
             while True:
@@ -183,7 +216,8 @@ async def run_playbook_streamed(item: PlannedItem, run_id: str, deployment_id: s
                 if not raw:
                     break
                 line = redact(raw.decode(errors="replace"))
-                output_lines.append(line)
+                if is_recap_line(line):
+                    recap_lines.append(line)
                 yield line
             status = await asyncio.wait_for(proc.wait(), max(deadline - loop.time(), 0))
         except TimeoutError:
@@ -203,9 +237,9 @@ async def run_playbook_streamed(item: PlannedItem, run_id: str, deployment_id: s
 
         duration = int(time.monotonic() - start_ts)
         end = datetime.now().astimezone()
-        full_output = "".join(output_lines)
-        stats = parse_stats(full_output)
-        hosts = extract_hosts(full_output)
+        recap = "".join(recap_lines)
+        stats = parse_stats(recap)
+        hosts = extract_hosts(recap)
 
         db.log_run(run_id, item.playbook, item.inventory, start.isoformat(), end.isoformat(),
                    duration, status, attempt, deployment_id)
@@ -214,6 +248,8 @@ async def run_playbook_streamed(item: PlannedItem, run_id: str, deployment_id: s
 
         yield f"\nErgebnis: {item.playbook}\nStart: {start.strftime('%H:%M:%S')} | Dauer: {duration}s | Status: {'✅' if status == 0 else '❌'}\n"
         yield f"Hosts: {', '.join(hosts) if hosts else '—'}\n"
+        if stats["unreachable"]:
+            yield f"Nicht erreichbar: {stats['unreachable']} Host(s)\n"
 
         if status == 0:
             break
@@ -222,29 +258,37 @@ async def run_playbook_streamed(item: PlannedItem, run_id: str, deployment_id: s
 
 
 async def stream_deployment(plan: list[PlannedItem], run_id: str, deployment_id: str) -> AsyncGenerator[str]:
+    continue_on_failure = bool(setting("deployment", "continue_on_failure", False))
     failed: list[str] = []
-    for item in plan:
+    for index, item in enumerate(plan):
         outcome: dict[str, int] = {}
         async with aclosing(run_playbook_streamed(item, run_id, deployment_id, outcome)) as stream:
             async for chunk in stream:
                 yield chunk
         if outcome.get("status") != 0:
             failed.append(item.playbook)
+            skipped = [i.playbook for i in plan[index + 1:]]
+            if skipped and not continue_on_failure:
+                log.warning("deployment_stopped", extra={"run_id": run_id, "skipped_playbooks": skipped})
+                yield f"\n⏭ Abbruch nach Fehler – übersprungen: {', '.join(skipped)}\n"
+                break
 
-    result = "failed" if failed else "success"
+    result = db.RUN_FAILED if failed else db.RUN_SUCCESS
+    db.finish_run(run_id, result)
+    db.prune_runs(int(setting("history", "retention_days", 90)))
     log.info("deployment_run_finished", extra={"run_id": run_id, "deployment_id": deployment_id,
                                                 "result": result, "failed_playbooks": failed})
     # Maschinenlesbares Ergebnis: der HTTP-Status steht beim Streamen schon vorher fest
     yield f"\nRESULT={result} run_id={run_id}\n"
 
 
-class LockedStreamingResponse(StreamingResponse):
-    """Schließt den Stream-Generator nach Ende oder Abbruch und gibt danach den Workspace-Lock frei."""
+class ClosingStreamingResponse(StreamingResponse):
+    """Schließt den Stream-Generator nach Ende oder Abbruch und ruft danach on_close auf."""
 
-    def __init__(self, content: AsyncGenerator[str], lock: WorkspaceLock, **kwargs: Any):
+    def __init__(self, content: AsyncGenerator[str], on_close: Callable[[], None], **kwargs: Any):
         super().__init__(content, **kwargs)
         self._content = content
-        self._lock = lock
+        self._on_close = on_close
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         try:
@@ -253,10 +297,27 @@ class LockedStreamingResponse(StreamingResponse):
             try:
                 await self._content.aclose()
             finally:
-                self._lock.release()
+                self._on_close()
+
+
+def recover_interrupted_runs() -> None:
+    # Nur wenn gerade nichts läuft – sonst gehört der "running"-Run einem anderen Worker
+    lock = WorkspaceLock(lock_path())
+    if not lock.acquire():
+        return
+    try:
+        count = db.mark_interrupted_runs()
+        if count:
+            log.warning("runs_marked_interrupted", extra={"count": count})
+    finally:
+        lock.release()
 
 
 db.init_db()
+recover_interrupted_runs()
+db.prune_runs(int(setting("history", "retention_days", 90)))
+if setting("git", "allowed_branches", None) is None:
+    log.warning("git_branches_unrestricted", extra={"hint": "git.allowed_branches in der config.yaml setzen"})
 
 # 🌐 Endpunkte
 
@@ -275,7 +336,7 @@ def list_inventories():
 def create_deployment(name: str = Query(..., min_length=1, max_length=100, pattern=NAME_PATTERN)):
     max_deployments = int(setting("limits", "max_deployments", 1000))
     deployment_id = str(uuid.uuid4())
-    with db.connect() as conn:
+    with db.connect(immediate=True) as conn:
         (count,) = conn.execute("SELECT COUNT(*) FROM deployments").fetchone()
         if count >= max_deployments:
             raise HTTPException(status_code=409, detail=f"Maximal {max_deployments} Deployments erlaubt")
@@ -309,7 +370,8 @@ def add_playbook_to_deployment(
     resolve_or_reject(playbook, allowed_playbooks(), "Playbook")
     resolve_or_reject(inventory, allowed_inventories(), "Inventory")
     max_items = int(setting("limits", "max_items_per_deployment", 50))
-    with db.connect() as conn:
+    # IMMEDIATE: Zählen und Einfügen laufen ohne parallele Schreiber dazwischen
+    with db.connect(immediate=True) as conn:
         if not conn.execute("SELECT 1 FROM deployments WHERE id = ?", (deployment_id,)).fetchone():
             raise HTTPException(status_code=404, detail="Deployment not found")
         count, last_position = conn.execute(
@@ -344,8 +406,14 @@ def delete_deployment(deployment_id: str):
     return {"status": "deleted", "deployment_id": deployment_id}
 
 
-@app.post("/rundeployment/{deployment_id}")
-async def run_deployment(deployment_id: str):
+def current_branch() -> str | None:
+    if not os.path.isdir(os.path.join(workspace_root(), ".git")):
+        return None
+    rc, output = run_git_command(["symbolic-ref", "--short", "HEAD"])
+    return output.strip() if rc == 0 else "HEAD"
+
+
+def plan_deployment(deployment_id: str) -> list[PlannedItem]:
     with db.connect() as conn:
         rows = conn.execute(
             "SELECT playbook, inventory, tags, skip_tags FROM deployment_items WHERE deployment_id = ? ORDER BY position, rowid",
@@ -354,11 +422,18 @@ async def run_deployment(deployment_id: str):
     if not rows:
         raise HTTPException(status_code=404, detail="Deployment has no playbooks")
 
-    # Alles vor dem Start prüfen, damit Fehler als echter HTTP-Status ankommen
+    branch = current_branch()
+    if branch is not None and not branch_allowed(branch):
+        log.warning("branch_not_allowed", extra={"branch": branch, "deployment_id": deployment_id})
+        raise HTTPException(status_code=409, detail=f"Ausgecheckter Branch {branch!r} ist nicht freigegeben")
+
     playbooks = allowed_playbooks()
     inventories = allowed_inventories()
-    plan = [
-        PlannedItem(
+    plan = []
+    for playbook, inventory, tags, skip_tags in rows:
+        check_tags(tags, "Tags")
+        check_tags(skip_tags, "Skip-Tags")
+        plan.append(PlannedItem(
             playbook=playbook,
             inventory=inventory,
             playbook_path=resolve_or_reject(playbook, playbooks, "Playbook"),
@@ -366,40 +441,66 @@ async def run_deployment(deployment_id: str):
             tags=tags,
             skip_tags=skip_tags,
             retries=playbooks[playbook],
-        )
-        for playbook, inventory, tags, skip_tags in rows
-    ]
+        ))
+    return plan
 
+
+@app.post("/rundeployment/{deployment_id}")
+async def run_deployment(deployment_id: str):
+    # Erst sperren, dann prüfen: so kann kein Checkout die geprüften Dateien noch austauschen
     lock = acquire_workspace_lock()
-    run_id = str(uuid.uuid4())
+    try:
+        # Alles vor dem Start prüfen, damit Fehler als echter HTTP-Status ankommen
+        plan = await asyncio.to_thread(plan_deployment, deployment_id)
+        run_id = str(uuid.uuid4())
+        db.start_run(run_id, deployment_id)
+    except BaseException:
+        lock.release()
+        raise
+
+    def close() -> None:
+        try:
+            db.finish_run(run_id, db.RUN_ABORTED)  # no-op, wenn der Run regulär beendet wurde
+        finally:
+            lock.release()
+
     log.info("deployment_run_started", extra={"run_id": run_id, "deployment_id": deployment_id, "items": len(plan)})
-    return LockedStreamingResponse(
+    return ClosingStreamingResponse(
         stream_deployment(plan, run_id, deployment_id),
-        lock,
+        close,
         media_type="text/plain",
-        headers={"X-Run-Id": run_id},
+        headers={"X-Run-Id": run_id, "X-Accel-Buffering": "no", "Cache-Control": "no-cache"},
     )
 
 
 @app.get("/runs/{run_id}")
 def get_run(run_id: str):
     with db.connect() as conn:
+        run = conn.execute(
+            "SELECT deployment_id, started_at, finished_at, result FROM deployment_runs WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()
         rows = conn.execute(
             """SELECT deployment_id, playbook, inventory, start_time, end_time, duration, status, attempt
                FROM playbook_runs WHERE run_id = ? ORDER BY id""",
             (run_id,),
         ).fetchall()
-    if not rows:
+    if not run and not rows:
         raise HTTPException(status_code=404, detail="Run not found")
     attempts = [
         {"playbook": r[1], "inventory": r[2], "start_time": r[3], "end_time": r[4],
          "duration": r[5], "status": r[6], "attempt": r[7]}
         for r in rows
     ]
-    # Maßgeblich ist je Playbook der letzte Versuch
-    last_status = {a["playbook"]: a["status"] for a in attempts}
-    result = "success" if all(s == 0 for s in last_status.values()) else "failed"
-    return {"run_id": run_id, "deployment_id": rows[0][0], "result": result, "attempts": attempts}
+    if run:
+        deployment_id, started_at, finished_at, result = run
+    else:
+        # Runs aus älteren Versionen ohne Eintrag in deployment_runs: je Playbook zählt der letzte Versuch
+        last_status = {a["playbook"]: a["status"] for a in attempts}
+        result = db.RUN_SUCCESS if all(s == 0 for s in last_status.values()) else db.RUN_FAILED
+        deployment_id, started_at, finished_at = rows[0][0], rows[0][3], rows[-1][4]
+    return {"run_id": run_id, "deployment_id": deployment_id, "result": result,
+            "started_at": started_at, "finished_at": finished_at, "attempts": attempts}
 
 
 def run_git_command(args: list[str]) -> tuple[int, str]:
@@ -444,22 +545,45 @@ def git_checkout(branch: str):
     if run_git_command(["check-ref-format", "--branch", branch])[0] != 0:
         log.warning("branch_rejected", extra={"branch": branch})
         raise HTTPException(status_code=400, detail=f"Ungültiger Branch-Name: {branch!r}")
+    if not branch_allowed(branch):
+        log.warning("branch_not_allowed", extra={"branch": branch})
+        raise HTTPException(status_code=403, detail=f"Branch {branch!r} ist nicht freigegeben")
 
+    remote = str(setting("git", "remote", "origin"))
     lock = acquire_workspace_lock()
     try:
-        fetch_rc, fetch_output = run_git_command(["fetch", "--prune"])
-        if fetch_rc != 0:
-            log.warning("git_fetch_failed", extra={"returncode": fetch_rc})
-            raise HTTPException(status_code=502, detail={"fetch": fetch_output})
-        # "--" sorgt dafür, dass git den Namen nur als Branch und nie als Pfad interpretiert
-        checkout_rc, checkout_output = run_git_command(["checkout", branch, "--"])
+        fetch_output = ""
+        has_remote = remote in run_git_command(["remote"])[1].split()
+        if has_remote:
+            fetch_rc, fetch_output = run_git_command(["fetch", "--prune", remote])
+            if fetch_rc != 0:
+                log.warning("git_fetch_failed", extra={"returncode": fetch_rc})
+                raise HTTPException(status_code=502, detail={"fetch": fetch_output})
+
+        # Lokale Änderungen an versionierten Dateien würden mitgenommen oder den Checkout blockieren
+        _, changes = run_git_command(["status", "--porcelain", "--untracked-files=no"])
+        if changes.strip():
+            log.warning("git_worktree_dirty", extra={"branch": branch})
+            raise HTTPException(status_code=409, detail={"fetch": fetch_output, "local_changes": changes})
+
+        # Gibt es den Branch auf dem Remote, wird der lokale Branch auf genau diesen Stand gesetzt –
+        # ein einfacher Checkout bliebe auf einem älteren lokalen Stand stehen.
+        # "--" sorgt dafür, dass git den Namen nur als Branch und nie als Pfad interpretiert.
+        remote_ref = f"refs/remotes/{remote}/{branch}"
+        if has_remote and run_git_command(["rev-parse", "--verify", "--quiet", remote_ref])[0] == 0:
+            checkout_args = ["checkout", "-B", branch, "--track", f"{remote}/{branch}", "--"]
+        else:
+            checkout_args = ["checkout", branch, "--"]
+        checkout_rc, checkout_output = run_git_command(checkout_args)
         if checkout_rc != 0:
             log.warning("git_checkout_failed", extra={"branch": branch, "returncode": checkout_rc})
             raise HTTPException(status_code=400, detail={"fetch": fetch_output, "checkout": checkout_output})
+        commit = run_git_command(["rev-parse", "HEAD"])[1].strip()
     finally:
         lock.release()
-    log.info("git_checkout", extra={"branch": branch})
+    log.info("git_checkout", extra={"branch": branch, "commit": commit})
     return {
         "fetch": fetch_output,
-        "checkout": checkout_output
+        "checkout": checkout_output,
+        "commit": commit,
     }

@@ -37,7 +37,8 @@ def push_metrics(playbook, duration, status, attempt, stats, config) -> bool:
     gauge('deployment_changed_tasks', 'Geänderte Tasks im letzten Lauf', stats.get('changed', 0))
     gauge('deployment_skipped_tasks', 'Übersprungene Tasks im letzten Lauf', stats.get('skipped', 0))
     gauge('deployment_failed_tasks', 'Fehlgeschlagene Tasks im letzten Lauf', stats.get('failed', 0))
-    gauge('deployment_task_count', 'Tasks gesamt im letzten Lauf',
+    gauge('deployment_unreachable_hosts', 'Nicht erreichbare Hosts im letzten Lauf', stats.get('unreachable', 0))
+    gauge('deployment_task_count','Tasks gesamt im letzten Lauf',
           stats.get('ok', 0) + stats.get('changed', 0) + stats.get('skipped', 0) + stats.get('failed', 0))
     gauge('deployment_last_run_timestamp_seconds', 'Zeitpunkt des letzten Laufs (Unix-Zeit)', time.time())
 

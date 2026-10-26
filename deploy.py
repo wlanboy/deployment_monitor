@@ -1,6 +1,7 @@
 import argparse
 import logging
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -16,11 +17,50 @@ import db
 from locking import WorkspaceLock
 from logging_setup import setup_logging
 from metrics import push_metrics
-from runner import TIMEOUT_STATUS, extract_hosts, parse_stats
+from runner import NOT_STARTED_STATUS, TIMEOUT_STATUS, extract_hosts, parse_stats
 from validation import redact
 
 console = Console()
 log = logging.getLogger("deployment_cli")
+
+KILL_GRACE_SECONDS = 5
+
+
+def _kill_group(proc):
+    """Ganze Prozessgruppe beenden (ansible + Worker + ssh), erst SIGTERM, dann SIGKILL."""
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(proc.pid, sig)
+        except ProcessLookupError:
+            return
+        try:
+            proc.wait(timeout=KILL_GRACE_SECONDS)
+            return
+        except subprocess.TimeoutExpired:
+            continue
+
+
+def run_command(cmd, timeout):
+    """Kommando in eigener Prozessgruppe ausführen; liefert (status, stdout, fehlermeldung)."""
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                start_new_session=True)
+    except OSError as e:
+        return NOT_STARTED_STATUS, "", f"ansible-playbook konnte nicht gestartet werden: {e.strerror or e}"
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _kill_group(proc)
+        try:
+            stdout, _ = proc.communicate(timeout=KILL_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            stdout = ""
+        return TIMEOUT_STATUS, stdout or "", f"Zeitüberschreitung nach {timeout}s"
+    except BaseException:
+        # Eigene Prozessgruppe bekommt Ctrl+C vom Terminal nicht mit – selbst beenden
+        _kill_group(proc)
+        raise
+    return proc.returncode, stdout, stderr.strip() if proc.returncode != 0 else ""
 
 
 def run_playbook(playbook, retries, run_id, inventory_file, config):
@@ -35,15 +75,9 @@ def run_playbook(playbook, retries, run_id, inventory_file, config):
 
         cmd = ["ansible-playbook", playbook, "-i", inventory_file]
         console.print(cmd)
-        try:
-            result = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=timeout)
-            status = result.returncode
-            stdout = redact(result.stdout)
-            error_msg = redact(result.stderr.strip()) if status != 0 else ""
-        except subprocess.TimeoutExpired:
-            status = TIMEOUT_STATUS
-            stdout = ""
-            error_msg = f"Zeitüberschreitung nach {timeout}s"
+        status, stdout, error_msg = run_command(cmd, timeout)
+        stdout = redact(stdout)
+        error_msg = redact(error_msg)
         end_ts = time.time()
         end = datetime.now().astimezone()
 
@@ -68,15 +102,17 @@ def run_playbook(playbook, retries, run_id, inventory_file, config):
         table.add_row("Tasks Changed", str(stats.get('changed', 0)))
         table.add_row("Tasks Skipped", str(stats.get('skipped', 0)))
         table.add_row("Tasks Failed", str(stats.get('failed', 0)))
+        table.add_row("Hosts Unreachable", str(stats.get('unreachable', 0)))
         table.add_row("Hosts", ", ".join(hosts) if hosts else "—")
 
         console.print(table)
 
-        if status != 0:
-            console.print(f"[red]Fehler beim Playbook '{playbook}'[/red]")
-            console.print(error_msg)
-        else:
+        if status == 0:
             console.print(f"[green]Playbook '{playbook}' erfolgreich abgeschlossen.[/green]")
+            break
+        console.print(f"[red]Fehler beim Playbook '{playbook}'[/red]")
+        console.print(error_msg)
+        if status == NOT_STARTED_STATUS:
             break
     return status
 
@@ -95,6 +131,7 @@ def main(argv=None):
 
     with open(args.config) as f:
         config = yaml.safe_load(f) or {}
+    continue_on_failure = bool((config.get("deployment") or {}).get("continue_on_failure", False))
     db.init_db()
 
     lock = WorkspaceLock(os.path.join(os.path.dirname(db.DB_PATH) or ".", "workspace.lock"))
@@ -102,19 +139,28 @@ def main(argv=None):
         console.print("[red]Es läuft bereits ein Deployment oder Git-Vorgang.[/red]")
         return 1
 
+    run_id = str(uuid.uuid4())
+    db.start_run(run_id)
+    playbooks = config.get("playbooks") or []
+    total_duration = 0
+    failed = []
     try:
-        run_id = str(uuid.uuid4())
         console.rule(f"[bold magenta]🚀 Deployment gestartet (Run-ID: {run_id})")
-        total_duration = 0
-        failed = []
-
-        for pb in config.get("playbooks") or []:
+        for index, pb in enumerate(playbooks):
             start = time.time()
-            if run_playbook(pb["file"], max(1, int(pb.get("retries", 1))), run_id, inventory_file, config) != 0:
-                failed.append(pb["file"])
+            status = run_playbook(pb["file"], max(1, int(pb.get("retries", 1))), run_id, inventory_file, config)
             total_duration += int(time.time() - start)
+            if status != 0:
+                failed.append(pb["file"])
+                skipped = [p["file"] for p in playbooks[index + 1:]]
+                if skipped and not continue_on_failure:
+                    console.print(f"[yellow]⏭ Abbruch nach Fehler – übersprungen: {', '.join(skipped)}[/yellow]")
+                    break
+        db.finish_run(run_id, db.RUN_FAILED if failed else db.RUN_SUCCESS)
     finally:
+        db.finish_run(run_id, db.RUN_ABORTED)  # no-op, wenn oben bereits ein Ergebnis gesetzt wurde
         lock.release()
+    db.prune_runs(int((config.get("history") or {}).get("retention_days", 90)))
 
     if failed:
         console.rule(f"[bold red]❌ Fehlgeschlagen: {', '.join(failed)} (Gesamtdauer: {total_duration}s)")
