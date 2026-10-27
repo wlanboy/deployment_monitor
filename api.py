@@ -585,7 +585,9 @@ def run_git_command(args: list[str]) -> tuple[int, str]:
         )
     except subprocess.TimeoutExpired:
         log.warning("git_timeout", extra={"git_args": args, "timeout_seconds": timeout})
-        return TIMEOUT_STATUS, f"git {args[0]}: Zeitüberschreitung nach {int(timeout)}s"
+        # Unterbefehl nennen, nicht vorangestellte "-c key=wert"-Optionen
+        command = next(a for a, prev in zip(args, ["", *args]) if "-c" not in (a, prev))
+        return TIMEOUT_STATUS, f"git {command}: Zeitüberschreitung nach {int(timeout)}s"
     return proc.returncode, redact(proc.stdout)
 
 

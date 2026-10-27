@@ -811,6 +811,17 @@ class TestSignedCommits:
     def test_no_repository_refused(self, client, workspace, fake_ansible):
         assert client.post(f"/rundeployment/{deployment_with(client, SITE)}").status_code == 409
 
+    @pytest.mark.parametrize("args, command", [
+        (["status"], "status"),
+        (["-c", "gpg.ssh.allowedSignersFile=/x", "verify-commit", "HEAD"], "verify-commit"),
+    ])
+    def test_timeout_names_subcommand(self, workspace, monkeypatch, args, command):
+        def hang(*_args, **_kwargs):
+            raise subprocess.TimeoutExpired("git", 30)
+
+        monkeypatch.setattr(api.subprocess, "run", hang)
+        assert api.run_git_command(args) == (TIMEOUT_STATUS, f"git {command}: Zeitüberschreitung nach 30s")
+
     def test_signers_file_inside_workspace_refused(self, client, repo, fake_ansible, signing_key):
         inside = repo / "allowed_signers"
         inside.write_text(signing_key[1].read_text())
