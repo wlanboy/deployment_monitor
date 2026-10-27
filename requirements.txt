@@ -8,8 +8,6 @@ ansible-core==2.21.5
     # via deployment-monitor (pyproject.toml)
 anyio==4.15.1
     # via starlette
-argparse==1.4.0
-    # via deployment-monitor (pyproject.toml)
 cffi==2.1.1
     # via cryptography
 click==8.5.0
