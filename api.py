@@ -1,5 +1,6 @@
 import asyncio
 import fnmatch
+import hmac
 import logging
 import os
 import re
@@ -11,11 +12,12 @@ from collections.abc import AsyncGenerator, Callable, Iterable
 from contextlib import aclosing
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Annotated, Any
 
 import yaml
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from starlette.types import Receive, Scope, Send
 
 import db
@@ -41,7 +43,32 @@ from validation import (
 setup_logging()
 log = logging.getLogger("deployment_api")
 
-app = FastAPI(title="Deployment API")
+bearer = HTTPBearer(auto_error=False)
+
+
+def api_token() -> str:
+    return os.getenv("DEPLOYMENT_API_TOKEN", "")
+
+
+def require_token(request: Request,
+                  credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)]) -> None:
+    """Ohne DEPLOYMENT_API_TOKEN ist die API offen, sonst nur mit "Authorization: Bearer <token>".
+
+    Ein Authorization-Header erzwingt bei Cross-Origin-Requests einen CORS-Preflight –
+    damit greifen weder CSRF über fremde Webseiten noch DNS-Rebinding.
+    """
+    expected = api_token()
+    if not expected:
+        return
+    given = credentials.credentials if credentials else ""
+    if not hmac.compare_digest(given.encode(), expected.encode()):
+        log.warning("auth_failed", extra={"client": request.client.host if request.client else None,
+                                          "path": request.url.path})
+        raise HTTPException(status_code=401, detail="Fehlender oder ungültiger API-Token",
+                            headers={"WWW-Authenticate": "Bearer"})
+
+
+app = FastAPI(title="Deployment API", dependencies=[Depends(require_token)])
 
 CONFIG_PATH = os.getenv("DEPLOYMENT_CONFIG", "config.yaml")
 
@@ -53,7 +80,8 @@ KILL_GRACE_SECONDS = 5
 
 
 def ansible_env() -> dict[str, str]:
-    return {**os.environ, "ANSIBLE_NOCOLOR": "1", "PYTHONUNBUFFERED": "1"}
+    # Kein __pycache__ neben Plugins im Repo – das wären ungetrackte Dateien (siehe worktree_changes)
+    return {**os.environ, "ANSIBLE_NOCOLOR": "1", "PYTHONUNBUFFERED": "1", "PYTHONDONTWRITEBYTECODE": "1"}
 
 
 def git_env() -> dict[str, str]:
@@ -318,6 +346,8 @@ recover_interrupted_runs()
 db.prune_runs(int(setting("history", "retention_days", 90)))
 if setting("git", "allowed_branches", None) is None:
     log.warning("git_branches_unrestricted", extra={"hint": "git.allowed_branches in der config.yaml setzen"})
+if not api_token():
+    log.warning("api_unauthenticated", extra={"hint": "DEPLOYMENT_API_TOKEN setzen"})
 
 # 🌐 Endpunkte
 
@@ -413,6 +443,36 @@ def current_branch() -> str | None:
     return output.strip() if rc == 0 else "HEAD"
 
 
+def worktree_changes() -> str:
+    # Auch ungetrackte Dateien zählen: ein Playbook aus einem anderen Branch könnte sonst z.B.
+    # filter_plugins/*.py hinterlassen, die beim nächsten Deployment mitgeladen werden
+    return run_git_command(["status", "--porcelain", "--untracked-files=all"])[1]
+
+
+def allowed_signers_file() -> str | None:
+    path = setting("git", "allowed_signers_file", None)
+    if not path:
+        return None
+    full = os.path.realpath(str(path))
+    root = os.path.realpath(workspace_root())
+    # Läge die Datei im Repo, könnte jeder Branch seine eigenen Schlüssel freigeben
+    if os.path.commonpath([root, full]) == root:
+        log.error("allowed_signers_in_workspace", extra={"path": full})
+        raise HTTPException(status_code=500, detail="git.allowed_signers_file darf nicht in base_path liegen")
+    return full
+
+
+def verify_head_signature(has_repo: bool) -> None:
+    if not has_repo:
+        raise HTTPException(status_code=409, detail="Signierte Commits verlangt, aber kein Git-Repository im base_path")
+    signers = allowed_signers_file()
+    config_args = ["-c", f"gpg.ssh.allowedSignersFile={signers}"] if signers else []
+    rc, output = run_git_command([*config_args, "verify-commit", "HEAD"])
+    if rc != 0:
+        log.warning("git_signature_invalid", extra={"returncode": rc})
+        raise HTTPException(status_code=409, detail={"signature": output or "Commit ist nicht signiert"})
+
+
 def plan_deployment(deployment_id: str) -> list[PlannedItem]:
     with db.connect() as conn:
         rows = conn.execute(
@@ -426,6 +486,13 @@ def plan_deployment(deployment_id: str) -> list[PlannedItem]:
     if branch is not None and not branch_allowed(branch):
         log.warning("branch_not_allowed", extra={"branch": branch, "deployment_id": deployment_id})
         raise HTTPException(status_code=409, detail=f"Ausgecheckter Branch {branch!r} ist nicht freigegeben")
+    if branch is not None:
+        changes = worktree_changes()
+        if changes.strip():
+            log.warning("git_worktree_dirty", extra={"deployment_id": deployment_id})
+            raise HTTPException(status_code=409, detail={"local_changes": changes})
+    if setting("git", "require_signed_commits", False):
+        verify_head_signature(branch is not None)
 
     playbooks = allowed_playbooks()
     inventories = allowed_inventories()
@@ -560,8 +627,15 @@ def git_checkout(branch: str):
                 log.warning("git_fetch_failed", extra={"returncode": fetch_rc})
                 raise HTTPException(status_code=502, detail={"fetch": fetch_output})
 
-        # Lokale Änderungen an versionierten Dateien würden mitgenommen oder den Checkout blockieren
-        _, changes = run_git_command(["status", "--porcelain", "--untracked-files=no"])
+        if setting("git", "clean_on_checkout", False):
+            # Entfernt auch ignorierte Dateien (-x) – nichts Lokales darf in den neuen Branch wandern
+            clean_rc, clean_output = run_git_command(["clean", "-ffdx"])
+            if clean_rc != 0:
+                log.warning("git_clean_failed", extra={"returncode": clean_rc})
+                raise HTTPException(status_code=500, detail={"fetch": fetch_output, "clean": clean_output})
+
+        # Lokale Änderungen würden mitgenommen oder den Checkout blockieren
+        changes = worktree_changes()
         if changes.strip():
             log.warning("git_worktree_dirty", extra={"branch": branch})
             raise HTTPException(status_code=409, detail={"fetch": fetch_output, "local_changes": changes})

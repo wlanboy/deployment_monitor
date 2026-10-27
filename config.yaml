@@ -24,11 +24,18 @@ git:
   timeout_seconds: 60
   remote: origin
   # Nur diese Branches dürfen ausgecheckt und deployed werden (Glob-Muster).
-  # Ohne diesen Eintrag ist jeder Branch erlaubt.
+  # Ohne diesen Eintrag ist jeder Branch erlaubt. Wer auf einen freigegebenen Branch
+  # pushen darf, kann Code auf dem Controller und allen Zielhosts ausführen – hier nur
+  # Branches eintragen, die auf dem Git-Server geschützt sind (Review, kein Force-Push).
   allowed_branches:
     - main
-    - feature-*
     - release-*
+  # Nur signierte Commits deployen (git verify-commit HEAD). Für SSH-Signaturen die
+  # erlaubten Schlüssel als absoluten Pfad außerhalb von base_path angeben.
+  require_signed_commits: false
+  # allowed_signers_file: /etc/deployment-monitor/allowed_signers
+  # Vor jedem Checkout ungetrackte UND ignorierte Dateien löschen (git clean -ffdx).
+  clean_on_checkout: false
 
 history:
   retention_days: 90          # Lauf-Historie älter als N Tage löschen, 0 = nie

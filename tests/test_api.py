@@ -682,3 +682,139 @@ class TestBranchWhitelist:
     def test_empty_list_allows_nothing(self, client, repo):
         api.config["git"]["allowed_branches"] = []
         assert client.post("/git/checkout/main").status_code == 403
+
+
+class TestAuth:
+    TOKEN = "s3cret-token"
+
+    @pytest.fixture(autouse=True)
+    def token(self, monkeypatch):
+        monkeypatch.setenv("DEPLOYMENT_API_TOKEN", self.TOKEN)
+
+    def auth(self, token=TOKEN):
+        return {"Authorization": f"Bearer {token}"}
+
+    def test_open_without_configured_token(self, client, workspace, monkeypatch):
+        monkeypatch.delenv("DEPLOYMENT_API_TOKEN")
+        assert client.get("/playbooks").status_code == 200
+
+    def test_valid_token(self, client, workspace):
+        assert client.get("/playbooks", headers=self.auth()).status_code == 200
+
+    @pytest.mark.parametrize("headers", [
+        {},
+        {"Authorization": "Bearer falsch"},
+        {"Authorization": "Bearer "},
+        {"Authorization": f"Basic {TOKEN}"},
+        {"Authorization": "Bearer s3cret-token-longer"},
+    ])
+    def test_missing_or_wrong_token_rejected(self, client, workspace, headers):
+        response = client.get("/playbooks", headers=headers)
+        assert response.status_code == 401
+        assert response.headers["WWW-Authenticate"] == "Bearer"
+
+    def test_simple_post_cannot_checkout(self, client, repo):
+        # Formular-POST einer fremden Webseite: kein Authorization-Header möglich ohne Preflight
+        assert client.post("/git/checkout/feature/x").status_code == 401
+        assert current_branch(repo) == "main"
+
+    def test_run_requires_token(self, client, workspace, fake_ansible):
+        deployment_id = client.post("/deployment", params={"name": "t"}, headers=self.auth()).json()["id"]
+        add = client.put(f"/deployment/{deployment_id}", params={"playbook": SITE, "inventory": INVENTORY})
+        assert add.status_code == 401
+        assert client.post(f"/rundeployment/{deployment_id}").status_code == 401
+        with db.connect() as conn:
+            assert conn.execute("SELECT COUNT(*) FROM deployment_runs").fetchone() == (0,)
+
+
+class TestWorktree:
+    def test_run_refused_with_untracked_file(self, client, repo, fake_ansible):
+        deployment_id = deployment_with(client, SITE)
+        (repo / "filter_plugins").mkdir()
+        (repo / "filter_plugins" / "evil.py").write_text("import os\n")
+        response = client.post(f"/rundeployment/{deployment_id}")
+        assert response.status_code == 409
+        assert "filter_plugins/evil.py" in response.json()["detail"]["local_changes"]
+
+    def test_run_refused_with_modified_file(self, client, repo, fake_ansible):
+        deployment_id = deployment_with(client, SITE)
+        (repo / SITE).write_text("- hosts: all\n")
+        assert client.post(f"/rundeployment/{deployment_id}").status_code == 409
+
+    def test_ignored_files_do_not_block(self, client, repo, fake_ansible):
+        (repo / ".gitignore").write_text("*.retry\n")
+        git(repo, "add", ".gitignore")
+        git(repo, "commit", "-q", "-m", "ignore")
+        (repo / "site.retry").write_text("web01\n")
+        assert client.post(f"/rundeployment/{deployment_with(client, SITE)}").status_code == 200
+
+    def test_checkout_refused_with_untracked_file(self, client, repo):
+        (repo / "leftover.yaml").write_text("---\n")
+        response = client.post("/git/checkout/feature/x")
+        assert response.status_code == 409
+        assert "leftover.yaml" in response.json()["detail"]["local_changes"]
+        assert current_branch(repo) == "main"
+
+    def test_clean_on_checkout_removes_untracked_and_ignored(self, client, repo):
+        api.config["git"]["clean_on_checkout"] = True
+        (repo / ".gitignore").write_text("*.retry\n")
+        git(repo, "add", ".gitignore")
+        git(repo, "commit", "-q", "-m", "ignore")
+        git(repo, "branch", "-f", "feature/x")
+        (repo / "leftover.yaml").write_text("---\n")
+        (repo / "site.retry").write_text("web01\n")
+        assert client.post("/git/checkout/feature/x").status_code == 200
+        assert not (repo / "leftover.yaml").exists()
+        assert not (repo / "site.retry").exists()
+
+    def test_ansible_writes_no_bytecode(self):
+        assert api.ansible_env()["PYTHONDONTWRITEBYTECODE"] == "1"
+
+
+@pytest.fixture
+def signing_key(tmp_path):
+    """SSH-Signaturschlüssel außerhalb des Workspaces; liefert (privater Schlüssel, allowed_signers)."""
+    keys = tmp_path / "keys"
+    keys.mkdir()
+    key = keys / "id_ed25519"
+    subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(key)], check=True)
+    signers = keys / "allowed_signers"
+    signers.write_text(f't@example.com namespaces="git" {(keys / "id_ed25519.pub").read_text()}')
+    return key, signers
+
+
+def signed_commit(repo, key, message="signiert"):
+    git(repo, "-c", "gpg.format=ssh", "-c", f"user.signingkey={key}", "commit", "-q", "--allow-empty", "-S", "-m", message)
+
+
+class TestSignedCommits:
+    @pytest.fixture(autouse=True)
+    def require(self, workspace, signing_key):
+        api.config["git"]["require_signed_commits"] = True
+        api.config["git"]["allowed_signers_file"] = str(signing_key[1])
+
+    def test_unsigned_commit_refused(self, client, repo, fake_ansible):
+        response = client.post(f"/rundeployment/{deployment_with(client, SITE)}")
+        assert response.status_code == 409
+        assert "signature" in response.json()["detail"]
+
+    def test_signed_commit_allowed(self, client, repo, fake_ansible, signing_key):
+        signed_commit(repo, signing_key[0])
+        assert client.post(f"/rundeployment/{deployment_with(client, SITE)}").status_code == 200
+
+    def test_unknown_signer_refused(self, client, repo, fake_ansible, signing_key, tmp_path):
+        other = tmp_path / "other_key"
+        subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(other)], check=True)
+        signed_commit(repo, other)
+        assert client.post(f"/rundeployment/{deployment_with(client, SITE)}").status_code == 409
+
+    def test_no_repository_refused(self, client, workspace, fake_ansible):
+        assert client.post(f"/rundeployment/{deployment_with(client, SITE)}").status_code == 409
+
+    def test_signers_file_inside_workspace_refused(self, client, repo, fake_ansible, signing_key):
+        inside = repo / "allowed_signers"
+        inside.write_text(signing_key[1].read_text())
+        git(repo, "add", "allowed_signers")
+        signed_commit(repo, signing_key[0])
+        api.config["git"]["allowed_signers_file"] = str(inside)
+        assert client.post(f"/rundeployment/{deployment_with(client, SITE)}").status_code == 500

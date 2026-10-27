@@ -42,8 +42,10 @@ git:
   remote: origin
   allowed_branches:           # Glob-Muster; ohne Eintrag ist jeder Branch erlaubt
     - main
-    - feature-*
     - release-*
+  require_signed_commits: false   # true: nur Commits mit gültiger Signatur deployen
+  # allowed_signers_file: /etc/deployment-monitor/allowed_signers  # für SSH-Signaturen, außerhalb von base_path
+  clean_on_checkout: false        # true: vor dem Checkout git clean -ffdx (löscht auch ignorierte Dateien)
 
 history:
   retention_days: 90          # Lauf-Historie älter als N Tage löschen, 0 = nie
@@ -66,6 +68,7 @@ Playbooks oder Inventories, die nicht in der Whitelist stehen oder (per `..`, ab
 | `DEPLOYMENT_CONFIG` | `config.yaml` | Pfad zur Konfiguration |
 | `DEPLOYMENT_DB_PATH` | `deploymentjobs/deploymentjobs.db` | SQLite-Datenbank (API und CLI) |
 | `PUSHGATEWAY_URL` | aus `config.yaml` | überschreibt `prometheus.pushgateway_url` |
+| `DEPLOYMENT_API_TOKEN` | leer | Bearer-Token für alle API-Endpunkte; leer = keine Authentifizierung |
 | `LOG_LEVEL` | `INFO` | Log-Level; Logs gehen als JSON-Zeilen nach stderr |
 * Erzeuge dann einen Ordner /opt/dpl, kopiere die Beispiele und initialisiere ein git repro daraus
 ```bash
@@ -79,7 +82,7 @@ git init
 git branch -M main
 git add .
 git commit -m "Initial commit of /opt/dpl structure"
-git checkout -b feature-test
+git checkout -b release-test
 ```
 
 ## uv setup
@@ -215,6 +218,8 @@ curl -X POST "http://localhost:8000/rundeployment/76aaf757-761d-45a1-9136-ab05c0
 * Bricht der Client die Verbindung ab, wird `ansible-playbook` samt Kindprozessen beendet.
 * Schlägt ein Playbook (nach allen Versuchen) fehl, werden die restlichen Playbooks übersprungen – außer `deployment.continue_on_failure: true`.
 * Ist `git.allowed_branches` gesetzt, startet ein Deployment nur, wenn der ausgecheckte Branch freigegeben ist (sonst HTTP 409).
+* Ein Deployment startet nur bei sauberem Arbeitsverzeichnis – geänderte oder ungetrackte Dateien: HTTP 409.
+* Mit `git.require_signed_commits: true` muss der ausgecheckte Commit gültig signiert sein (`git verify-commit HEAD`), sonst HTTP 409.
 
 ### 📜 5. Ergebnis eines Laufs abfragen
 ```bash
@@ -236,14 +241,25 @@ curl "http://localhost:8000/git/status"
 
 ## 🔀 Branch wechseln
 ```bash
-curl -X POST "http://localhost:8000/git/checkout/feature-test"
-curl -X POST "http://localhost:8000/git/checkout/feature/neues-playbook"
+curl -X POST "http://localhost:8000/git/checkout/release-test"
+curl -X POST "http://localhost:8000/git/checkout/main"
 ```
 * Gibt es den Branch auf dem Remote (`git.remote`), wird der lokale Branch nach dem `fetch` auf genau diesen Stand gesetzt. Ohne Remote wird nur gewechselt.
 * Die Antwort enthält den ausgecheckten Commit (`commit`).
 * Branch-Namen werden validiert (keine Optionen wie `-f`, kein `..` usw.) → ungültig: HTTP 400; nicht in `git.allowed_branches`: HTTP 403.
-* Lokale Änderungen an versionierten Dateien: HTTP 409. Fehlgeschlagener Checkout: HTTP 400, fehlgeschlagenes `git fetch`: HTTP 502.
+* Lokale Änderungen oder ungetrackte Dateien im Arbeitsverzeichnis: HTTP 409 (mit `git.clean_on_checkout: true` werden ungetrackte und ignorierte Dateien vorher gelöscht). Fehlgeschlagener Checkout: HTTP 400, fehlgeschlagenes `git fetch`: HTTP 502.
 * Zugangsdaten in URLs werden in allen Ausgaben maskiert.
 
 ## ⚠️ Sicherheit
-Die API hat **keine Authentifizierung**. Wer Port 8000 erreicht, kann Playbooks mit den eingebundenen SSH-Keys ausführen. Betreibe sie nur in einem vertrauenswürdigen Netz bzw. hinter einem Reverse-Proxy mit Authentifizierung und TLS.
+Wer die API erreicht, kann Playbooks mit den eingebundenen SSH-Keys ausführen. Deshalb:
+
+* **`DEPLOYMENT_API_TOKEN` setzen.** Ohne Token ist die API offen – auch ein „internes Netz“ schützt dann nicht: jede Webseite, die ein Kollege im Browser öffnet, kann per CSRF einen Checkout auslösen oder per DNS-Rebinding Deployments starten. Mit Token muss jeder Request den Header mitschicken:
+  ```bash
+  export DEPLOYMENT_API_TOKEN=$(openssl rand -hex 32)
+  curl -H "Authorization: Bearer $DEPLOYMENT_API_TOKEN" http://localhost:8000/playbooks
+  ```
+  In der Swagger-UI den Token über „Authorize“ eintragen. Ohne/mit falschem Token: HTTP 401.
+* **TLS** über einen Reverse-Proxy; der Token geht sonst im Klartext über das Netz.
+* **Branch-Schutz ist die eigentliche Grenze:** Ein Branch bringt beliebigen Code mit (eigene Plugins, `delegate_to: localhost`, dynamische Inventories). In `git.allowed_branches` nur Branches eintragen, die auf dem Git-Server geschützt sind, und optional `git.require_signed_commits` aktivieren.
+* SSH-Signaturen prüfen: `allowed_signers_file` muss **außerhalb** von `base_path` liegen, sonst könnte jeder Branch seine eigenen Schlüssel freigeben. Format pro Zeile: `mail@example.com namespaces="git" ssh-ed25519 AAAA…`.
+* Ansible-Ausgaben gehen vollständig an den Client. Zugangsdaten in URLs und `password=…`-Muster werden maskiert, für sensible Tasks trotzdem `no_log: true` setzen.

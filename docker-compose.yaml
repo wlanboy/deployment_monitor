@@ -10,6 +10,17 @@ services:
     environment:
       # Pushgateway läuft auf dem Host (prometheus/docker-compose.yaml), nicht im API-Container
       - PUSHGATEWAY_URL=http://host.docker.internal:9091
+      # Bearer-Token für die API (z.B. aus .env); leer = keine Authentifizierung
+      - DEPLOYMENT_API_TOKEN=${DEPLOYMENT_API_TOKEN:-}
+    # Härtung: nur Volumes und tmpfs sind beschreibbar, keine Capabilities, kein Rechte-Gewinn
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /home/deployuser/.ansible   # ansible local_tmp und SSH-ControlPersist-Sockets
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     extra_hosts:
       - "host.docker.internal:host-gateway"
 

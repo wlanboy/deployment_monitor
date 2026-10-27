@@ -31,18 +31,26 @@ Die API benötigt Zugriff auf:
 docker run -it --rm \
   -v ~/.ssh:/home/deployuser/.ssh:ro \
   -v /opt/dpl:/opt/dpl \
+  -v deployment-db:/app/deploymentjobs \
   -e PUSHGATEWAY_URL=http://host.docker.internal:9091 \
+  -e DEPLOYMENT_API_TOKEN \
   --add-host host.docker.internal:host-gateway \
+  --read-only --tmpfs /tmp --tmpfs /home/deployuser/.ansible \
+  --cap-drop ALL --security-opt no-new-privileges \
   -p 8000:8000 \
   deployment-monitor
 ```
+
+`--read-only` macht das Root-Dateisystem schreibgeschützt; beschreibbar sind nur die Volumes (Datenbank, `/opt/dpl` für git) und die tmpfs-Mounts für Ansible. `-e DEPLOYMENT_API_TOKEN` übernimmt den Token aus der Shell (siehe README, Abschnitt Sicherheit).
 
 Hinweis: `localhost` im Container ist der Container selbst. Das Pushgateway aus `prometheus/docker-compose.yaml` läuft auf dem Host und ist über `host.docker.internal` erreichbar.
 
 ## 🚀 4. Container starten mit docker compose und dockerhub image
 ```bash
+echo "DEPLOYMENT_API_TOKEN=$(openssl rand -hex 32)" > .env
 docker-compose up
 ```
+Die Compose-Datei setzt dieselbe Härtung (read-only, tmpfs, `cap_drop: ALL`, `no-new-privileges`).
 
 ## (for info) Container taggen und publishen
 ```bash

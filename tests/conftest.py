@@ -15,6 +15,7 @@ sys.path.insert(0, ROOT)
 os.environ["DEPLOYMENT_DB_PATH"] = os.path.join(tempfile.mkdtemp(prefix="deployment-monitor-tests-"), "deploymentjobs.db")
 os.environ["DEPLOYMENT_CONFIG"] = os.path.join(ROOT, "config.yaml")
 os.environ.pop("PUSHGATEWAY_URL", None)
+os.environ.pop("DEPLOYMENT_API_TOKEN", None)
 
 import db
 

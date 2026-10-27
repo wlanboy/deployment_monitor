@@ -33,8 +33,9 @@ WORKDIR /app
 COPY *.py ./
 COPY config.yaml ./
 
-# Datenverzeichnis im Image anlegen, damit das Named Volume deployuser gehört
-RUN mkdir -p /app/deploymentjobs && chown -R deployuser:deployuser /app
+# Datenverzeichnis im Image anlegen, damit das Named Volume deployuser gehört.
+# Nur dieses Verzeichnis – der App-Code bleibt root-eigen und für deployuser schreibgeschützt.
+RUN mkdir -p /app/deploymentjobs && chown deployuser:deployuser /app/deploymentjobs
 USER deployuser
 
 # Expose the port the app runs on
